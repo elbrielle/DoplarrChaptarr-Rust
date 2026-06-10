@@ -193,7 +193,8 @@ api_key = "your_sonarr_api_key"
 quality_profile = "WEB-1080p"
 rootfolder = "/tv"
 season_folders = true
-series_type = "standard"             # standard, daily, anime
+series_type = "standard"             # standard, daily, anime (auto-detected if unset)
+allow_specials = false               # offer Season 0 for existing series
 # Restrict which monitor options users can select
 allowed_monitor_types = ["firstSeason", "lastSeason", "latestSeason", "pilot", "recent"]
 

@@ -38,3 +38,23 @@ In `doplarr/src/config.rs`, add the appropriate configuration settings for use i
 ### Add Initialization
 
 In `doplarr/src/main.rs`, update the `let mut backends = HashMap::new() ...` section to match the new config type, mapping to your constructor.
+
+## TODO: Message UX Pass
+
+The flow currently mixes Components V2 (ephemeral interactive messages) with a
+plain-content classic message for the public followup. The split is deliberate -
+V2 messages cannot carry `content`, and `content` is the only thing OS
+notification previews render - but the presentation deserves a dedicated pass:
+
+- Unify wording: ephemeral completion says "Request Submitted", the old public
+  message said "New Request", and `SuccessMessage::title` is ignored entirely
+- Terminal states (timeout, "No results", errors) are bare unstyled text while
+  the rest of the flow lives in an accent-colored container
+- The ephemeral completion message has the poster thumbnail available but
+  doesn't show it
+- The public followup is plain text only. An embed was tried and rejected: it
+  duplicated the content line, and tapping the poster thumbnail on iOS opened
+  the raw jpeg instead of a media viewer (Discord doesn't lightbox the skyhook
+  image URLs)
+- Best batched with the Seerr integration, which will reshape the request form
+  anyway (availability states, quotas, per-user requests)

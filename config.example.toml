@@ -108,7 +108,12 @@ api_key = "your_sonarr_api_key"
 # Use season folders (default: user selects at runtime)
 # season_folders = true
 
+# Offer Season 0 (specials) when requesting seasons of existing series (default: false)
+# allow_specials = true
+
 # Series type: standard, daily, anime
+# Never shown to users. If unset, anime is auto-detected from the
+# series' genres and everything else is treated as standard
 # series_type = "standard"
 
 # Monitor type (if set, users cannot change):

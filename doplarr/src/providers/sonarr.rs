@@ -12,13 +12,13 @@ use sonarr_api::{
         series_api::{api_v3_series_id_get, api_v3_series_id_put, api_v3_series_post},
         series_lookup_api::api_v3_series_lookup_get,
     },
-    commands::SeriesSearchCommand,
+    commands::SeasonSearchCommand,
     models::{
         AddSeriesOptions, MonitorTypes, QualityProfileResource, RootFolderResource, SeriesResource,
         SeriesTypes,
     },
 };
-use tracing::{debug, error, info, trace};
+use tracing::{debug, error, info, trace, warn};
 
 /// Helper function to log detailed error information from Sonarr API responses
 fn log_api_error<T: std::fmt::Debug>(err: &SonarrApiError<T>, context: &str) {
@@ -41,10 +41,37 @@ fn log_api_error<T: std::fmt::Debug>(err: &SonarrApiError<T>, context: &str) {
     }
 }
 
+/// Treat a 2xx response whose body fails to parse as success - by the time we're
+/// reading the body, Sonarr has already applied the change
+fn tolerate_response_parse_error<T, E>(
+    result: std::result::Result<T, SonarrApiError<E>>,
+    context: &str,
+) -> Result<Option<T>>
+where
+    E: std::fmt::Debug + Send + Sync + 'static,
+{
+    match result {
+        Ok(x) => Ok(Some(x)),
+        Err(SonarrApiError::Serde(e)) => {
+            warn!(
+                "{} - succeeded, but the response body failed to parse: {}",
+                context, e
+            );
+            Ok(None)
+        }
+        Err(e) => {
+            log_api_error(&e, context);
+            Err(e.into())
+        }
+    }
+}
+
 #[derive(Debug, Clone)]
 pub struct Sonarr {
     config: Configuration,
     details: Details,
+    /// Whether Season 0 (specials) can be requested for existing series
+    allow_specials: bool,
 }
 
 #[derive(Debug, Clone)]
@@ -53,7 +80,8 @@ pub struct Details {
     rootfolders: Vec<RootFolderResource>,
     quality_profiles: Vec<QualityProfileResource>,
     monitor: Vec<MonitorTypes>,
-    series_type: Vec<SeriesTypes>,
+    /// Config-pinned series type; when unset, it's auto-detected per series
+    series_type: Option<SeriesTypes>,
     season_folder: Option<bool>,
 }
 
@@ -80,6 +108,7 @@ impl Sonarr {
         series_type: Option<SeriesTypes>,
         season_folder: Option<bool>,
         allowed_monitor_types: Option<Vec<MonitorTypes>>,
+        allow_specials: bool,
         client: reqwest::Client,
     ) -> Result<Self> {
         // Log connection before moving base_path
@@ -151,16 +180,6 @@ impl Sonarr {
             quality_profiles = vec![selected];
         }
 
-        let series_type = if let Some(x) = series_type {
-            vec![x]
-        } else {
-            vec![
-                SeriesTypes::Standard,
-                SeriesTypes::Daily,
-                SeriesTypes::Anime,
-            ]
-        };
-
         let monitor = if let Some(x) = monitor_type {
             vec![x]
         } else if let Some(allowed) = allowed_monitor_types {
@@ -188,7 +207,11 @@ impl Sonarr {
             season_folder,
         };
 
-        Ok(Self { config, details })
+        Ok(Self {
+            config,
+            details,
+            allow_specials,
+        })
     }
 
     #[allow(irrefutable_let_patterns)]
@@ -202,6 +225,7 @@ impl Sonarr {
             series_type,
             season_folders,
             allowed_monitor_types,
+            allow_specials,
         } = backend
         {
             Self::new(
@@ -213,6 +237,7 @@ impl Sonarr {
                 series_type,
                 season_folders,
                 allowed_monitor_types,
+                allow_specials.unwrap_or(false),
                 client,
             )
             .await
@@ -258,6 +283,7 @@ impl From<Details> for Vec<RequestDetails> {
             options: quality_profile_options,
             metadata: Some(field_keys::QUALITY_PROFILE.to_string()),
             field_type: FieldType::Dropdown,
+            always_show: false,
         };
 
         let rootfolder_options = details
@@ -279,6 +305,7 @@ impl From<Details> for Vec<RequestDetails> {
             options: rootfolder_options,
             metadata: Some(field_keys::ROOT_FOLDER.to_string()),
             field_type: FieldType::Dropdown,
+            always_show: false,
         };
 
         let monitor_options = details
@@ -315,30 +342,7 @@ impl From<Details> for Vec<RequestDetails> {
             options: monitor_options,
             metadata: Some(field_keys::MONITOR.to_string()),
             field_type: FieldType::Dropdown,
-        };
-
-        let series_type_options = details
-            .series_type
-            .iter()
-            .map(|x| {
-                let title = match x {
-                    SeriesTypes::Standard => "Standard",
-                    SeriesTypes::Daily => "Daily",
-                    SeriesTypes::Anime => "Anime",
-                };
-                DropdownOption {
-                    title: title.to_string(),
-                    description: None,
-                    id: Some(SelectableId::String(x.to_string())),
-                }
-            })
-            .collect();
-
-        let series_type_details = RequestDetails {
-            title: "Series Type".to_string(),
-            options: series_type_options,
-            metadata: Some(field_keys::SERIES_TYPE.to_string()),
-            field_type: FieldType::Dropdown,
+            always_show: false,
         };
 
         // Season folder boolean option - show both if None, or just the config value if Some
@@ -373,12 +377,12 @@ impl From<Details> for Vec<RequestDetails> {
             options: season_folder_options,
             metadata: Some(field_keys::SEASON_FOLDER.to_string()),
             field_type: FieldType::Boolean,
+            always_show: false,
         };
 
         vec![
             rootfolder_details,
             monitor_details,
-            series_type_details,
             quality_profile_details,
             season_folder_details,
         ]
@@ -397,11 +401,9 @@ impl TryFrom<Vec<RequestDetails>> for SelectedDetails {
         let mut season_number = None;
 
         for detail in details {
-            let selection = detail
-                .options
-                .into_iter()
-                .next()
-                .expect("RequestDetails must have at least one option");
+            let Some(selection) = detail.options.into_iter().next() else {
+                bail!("No option was selected for '{}'", detail.title);
+            };
 
             match detail.metadata.as_deref() {
                 Some(field_keys::ROOT_FOLDER) => {
@@ -410,34 +412,34 @@ impl TryFrom<Vec<RequestDetails>> for SelectedDetails {
                 Some(field_keys::QUALITY_PROFILE) => {
                     quality_profile_id = match selection.id {
                         Some(SelectableId::Integer(i)) => Some(i),
-                        _ => panic!("Quality profile must have integer ID"),
+                        other => bail!("Quality profile must have an integer ID, got {other:?}"),
                     };
                 }
                 Some(field_keys::MONITOR) => {
                     monitor = match selection.id {
                         Some(SelectableId::String(s)) => Some(deserialize_from_string(&s)?),
-                        _ => panic!("Monitor must have string ID"),
+                        other => bail!("Monitor must have a string ID, got {other:?}"),
                     };
                 }
                 Some(field_keys::SERIES_TYPE) => {
                     series_type = match selection.id {
                         Some(SelectableId::String(s)) => Some(deserialize_from_string(&s)?),
-                        _ => panic!("Series type must have string ID"),
+                        other => bail!("Series type must have a string ID, got {other:?}"),
                     };
                 }
                 Some(field_keys::SEASON_FOLDER) => {
                     season_folder = match selection.id {
                         Some(SelectableId::Boolean(b)) => Some(b),
-                        _ => panic!("Season folder must have boolean ID"),
+                        other => bail!("Season folder must have a boolean ID, got {other:?}"),
                     };
                 }
                 Some(field_keys::SEASON) => {
                     season_number = match selection.id {
                         Some(SelectableId::Integer(i)) => Some(i),
-                        _ => panic!("Season must have integer ID"),
+                        other => bail!("Season must have an integer ID, got {other:?}"),
                     };
                 }
-                _ => panic!("Unknown metadata key: {:?}", detail.metadata),
+                other => bail!("Unknown metadata key: {other:?}"),
             }
         }
 
@@ -492,11 +494,15 @@ impl MediaBackend for Sonarr {
             .downcast_ref::<SeriesResource>()
             .expect("Invalid media type for Sonarr");
 
-        // Check if series exists and all seasons are already fully monitored
+        // Check if series exists and all requestable seasons are already monitored
+        // (when specials are disabled, an unmonitored Season 0 doesn't count)
         if let Some(id) = media.id
             && let Some(Some(ref seasons)) = media.seasons
         {
-            let all_monitored = seasons.iter().all(|s| s.monitored.unwrap_or(false));
+            let all_monitored = seasons
+                .iter()
+                .filter(|s| self.allow_specials || s.season_number.unwrap_or(0) != 0)
+                .all(|s| s.monitored.unwrap_or(false));
 
             if all_monitored && !seasons.is_empty() {
                 info!(series_id = id, "Series already fully monitored");
@@ -524,12 +530,11 @@ impl MediaBackend for Sonarr {
         }
     }
 
-    fn additional_details(&self, media: &dyn MediaItem) -> Vec<RequestDetails> {
+    async fn additional_details(&self, media: &dyn MediaItem) -> Result<Vec<RequestDetails>> {
         let media = media
             .as_any()
             .downcast_ref::<SeriesResource>()
-            .context("Invalid media type for Sonarr")
-            .unwrap();
+            .context("Invalid media type for Sonarr")?;
 
         let mut details: Vec<RequestDetails> = self.details.clone().into();
 
@@ -550,10 +555,12 @@ impl MediaBackend for Sonarr {
             });
 
             // Add season selector showing only unmonitored seasons
+            // (Season 0 is only requestable when specials are enabled)
             if let Some(Some(ref seasons)) = media.seasons {
                 let mut unmonitored_seasons: Vec<_> = seasons
                     .iter()
                     .filter(|s| !s.monitored.unwrap_or(false))
+                    .filter(|s| self.allow_specials || s.season_number.unwrap_or(0) != 0)
                     .collect();
 
                 if !unmonitored_seasons.is_empty() {
@@ -596,15 +603,54 @@ impl MediaBackend for Sonarr {
                         options: season_options,
                         metadata: Some(field_keys::SEASON.to_string()),
                         field_type: FieldType::Dropdown,
+                        // Even a lone season should be reviewable before requesting
+                        always_show: true,
                     };
 
                     // Insert season details at the end
                     details.push(season_details);
                 }
             }
+
+            // Without a season to offer, the request flow has nothing to do
+            // (e.g. the lookup payload had no season data at all)
+            if details.is_empty() {
+                bail!("Series is already in Sonarr but has no seasons available to request");
+            }
+        } else {
+            // New series: series type is Sonarr arcana most requesters won't
+            // understand, so don't ask - use the config pin if present,
+            // otherwise auto-detect anime from the lookup's genres
+            let series_type = self.details.series_type.unwrap_or_else(|| {
+                let is_anime = matches!(&media.genres, Some(Some(genres))
+                    if genres.iter().any(|g| g.eq_ignore_ascii_case("anime")));
+                if is_anime {
+                    SeriesTypes::Anime
+                } else {
+                    SeriesTypes::Standard
+                }
+            });
+            debug!(series_type = %series_type, "Resolved series type");
+
+            let title = match series_type {
+                SeriesTypes::Standard => "Standard",
+                SeriesTypes::Daily => "Daily",
+                SeriesTypes::Anime => "Anime",
+            };
+            details.push(RequestDetails {
+                title: "Series Type".to_string(),
+                options: vec![DropdownOption {
+                    title: title.to_string(),
+                    description: None,
+                    id: Some(SelectableId::String(series_type.to_string())),
+                }],
+                metadata: Some(field_keys::SERIES_TYPE.to_string()),
+                field_type: FieldType::Dropdown,
+                always_show: false,
+            });
         }
 
-        details
+        Ok(details)
     }
 
     async fn request(&self, details: Vec<RequestDetails>, media: Box<dyn MediaItem>) -> Result<()> {
@@ -631,7 +677,7 @@ impl MediaBackend for Sonarr {
 
             let season_number = selected
                 .season_number
-                .expect("Season must be selected for existing series");
+                .context("No season was selected for an existing series")?;
 
             debug!(season_number = season_number, "Adding season to monitoring");
 
@@ -677,45 +723,44 @@ impl MediaBackend for Sonarr {
             trace!("Updated series object: {:#?}", existing_series);
 
             // PUT the updated series back
-            api_v3_series_id_put(&self.config, &id.to_string(), None, Some(existing_series))
-                .await
-                .inspect_err(|e| {
-                    log_api_error(e, "Failed to update series in Sonarr");
-                })?;
+            tolerate_response_parse_error(
+                api_v3_series_id_put(&self.config, &id.to_string(), None, Some(existing_series))
+                    .await,
+                "Failed to update series in Sonarr",
+            )?;
 
-            // Trigger a search for the newly monitored season
+            // Trigger a search scoped to the newly monitored season
             info!("Triggering search for newly monitored season");
-            let search_command = SeriesSearchCommand::new(id);
+            let search_command = SeasonSearchCommand::new(id, season_number);
             trace!("Search command: {:?}", search_command);
 
-            let result = api_v3_command_post_custom(&self.config, &search_command)
-                .await
-                .inspect_err(|e| {
-                    log_api_error(e, "Failed to trigger series search");
-                })?;
+            let result = tolerate_response_parse_error(
+                api_v3_command_post_custom(&self.config, &search_command).await,
+                "Failed to trigger season search",
+            )?;
 
             info!(
                 "Search command queued successfully, command_id: {:?}",
-                result.id
+                result.and_then(|r| r.id)
             );
         } else {
             info!("Series is new, adding to Sonarr");
 
             let monitor = selected
                 .monitor
-                .expect("Monitor type must be selected for new series");
+                .context("No monitor type was selected for a new series")?;
             let rootfolder_path = selected
                 .rootfolder_path
-                .expect("Root folder must be selected for new series");
+                .context("No root folder was selected for a new series")?;
             let season_folder = selected
                 .season_folder
-                .expect("Season folder must be selected for new series");
+                .context("No season folder choice was selected for a new series")?;
             let quality_profile_id = selected
                 .quality_profile_id
-                .expect("Quality profile must be selected for new series");
+                .context("No quality profile was selected for a new series")?;
             let series_type = selected
                 .series_type
-                .expect("Series type must be selected for new series");
+                .context("No series type was selected for a new series")?;
 
             debug!(
                 "Request details - rootfolder: {}, quality_profile_id: {:?}, monitor: {:?}, series_type: {:?}, season_folder: {}",
@@ -743,11 +788,10 @@ impl MediaBackend for Sonarr {
 
             trace!("Full media object: {:#?}", media);
 
-            api_v3_series_post(&self.config, Some(media))
-                .await
-                .inspect_err(|e| {
-                    log_api_error(e, "Failed to add series to Sonarr");
-                })?;
+            tolerate_response_parse_error(
+                api_v3_series_post(&self.config, Some(media)).await,
+                "Failed to add series to Sonarr",
+            )?;
         }
 
         Ok(())
@@ -784,6 +828,7 @@ impl MediaBackend for Sonarr {
 
         SuccessMessage {
             title: "Request Successful".to_string(),
+            summary: format!("{title} ({year}){detail_text}"),
             description: format!(
                 "{title} ({year}){detail_text} has been requested and will be downloaded when available.",
             ),

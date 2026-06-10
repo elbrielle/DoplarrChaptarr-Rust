@@ -19,3 +19,24 @@ impl SeriesSearchCommand {
         }
     }
 }
+
+/// Minimal SeasonSearch command payload
+/// Reference: https://github.com/Sonarr/Sonarr/blob/develop/src/NzbDrone.Core/IndexerSearch/SeasonSearchCommand.cs
+#[derive(Debug, Clone, Serialize)]
+pub struct SeasonSearchCommand {
+    name: String,
+    #[serde(rename = "seriesId")]
+    pub series_id: i32,
+    #[serde(rename = "seasonNumber")]
+    pub season_number: i32,
+}
+
+impl SeasonSearchCommand {
+    pub fn new(series_id: i32, season_number: i32) -> Self {
+        Self {
+            name: "SeasonSearch".to_string(),
+            series_id,
+            season_number,
+        }
+    }
+}

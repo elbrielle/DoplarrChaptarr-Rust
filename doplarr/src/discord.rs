@@ -46,6 +46,18 @@ const ACCENT_COLOR: u32 = 0xCE4A28;
 
 const INTERACTION_TIMEOUT_DURATION: Duration = Duration::from_secs(300);
 
+/// Truncate text to Discord's component text limit, respecting char boundaries
+fn truncate_text(text: &str) -> String {
+    if text.len() <= MAX_TEXT_CONTENT_LENGTH {
+        return text.to_string();
+    }
+    let mut end = MAX_TEXT_CONTENT_LENGTH - 3;
+    while !text.is_char_boundary(end) {
+        end -= 1;
+    }
+    format!("{}...", &text[..end])
+}
+
 /// Build the comand object, used to register with Discord what slash commands are available
 pub fn commands<T: AsRef<str>>(media_kinds: impl IntoIterator<Item = T>) -> Command {
     let query = StringBuilder::new(QUERY_COMMAND_NAME, "search query").required(true);
@@ -56,7 +68,7 @@ pub fn commands<T: AsRef<str>>(media_kinds: impl IntoIterator<Item = T>) -> Comm
     );
     for kind in media_kinds {
         request_command = request_command.option(
-            SubCommandBuilder::new(kind.as_ref(), format!("Request a {}", kind.as_ref()))
+            SubCommandBuilder::new(kind.as_ref(), format!("Request {}", kind.as_ref()))
                 .option(query.clone()),
         )
     }
@@ -100,6 +112,28 @@ async fn respond_interaction_component(
                         .components(vec![component])
                         .build(),
                 ),
+            },
+        )
+        .await?;
+    Ok(())
+}
+
+/// Acknowledge a component interaction without changing the message, so Discord
+/// doesn't show "interaction failed" for events we intentionally ignore
+async fn ack_component(
+    client: &Arc<HttpClient>,
+    application_id: Id<ApplicationMarker>,
+    interaction_id: Id<InteractionMarker>,
+    interaction_token: &str,
+) -> anyhow::Result<()> {
+    client
+        .interaction(application_id)
+        .create_response(
+            interaction_id,
+            interaction_token,
+            &InteractionResponse {
+                kind: InteractionResponseType::DeferredUpdateMessage,
+                data: None,
             },
         )
         .await?;
@@ -211,6 +245,7 @@ fn build_request_component(
     display_info: &MediaDisplayInfo,
     request_details: &[RequestDetails],
     user_selectable_fields: &std::collections::HashSet<String>,
+    submitting: bool,
 ) -> Component {
     // Build the container that holds everything
     let mut container = ContainerBuilder::new().accent_color(Some(ACCENT_COLOR));
@@ -237,12 +272,8 @@ fn build_request_component(
 
         // Only add description if it exists, and truncate if needed
         if let Some(description) = &display_info.description {
-            let truncated = if description.len() > MAX_TEXT_CONTENT_LENGTH {
-                format!("{}...", &description[..MAX_TEXT_CONTENT_LENGTH - 3])
-            } else {
-                description.clone()
-            };
-            section = section.component(TextDisplayBuilder::new(&truncated).build());
+            section =
+                section.component(TextDisplayBuilder::new(truncate_text(description)).build());
         }
 
         container = container.component(section.build());
@@ -254,12 +285,8 @@ fn build_request_component(
                 container.component(TextDisplayBuilder::new(format!("-# {}", subtitle)).build());
         }
         if let Some(description) = &display_info.description {
-            let truncated = if description.len() > MAX_TEXT_CONTENT_LENGTH {
-                format!("{}...", &description[..MAX_TEXT_CONTENT_LENGTH - 3])
-            } else {
-                description.clone()
-            };
-            container = container.component(TextDisplayBuilder::new(&truncated).build());
+            container =
+                container.component(TextDisplayBuilder::new(truncate_text(description)).build());
         }
     }
 
@@ -288,7 +315,7 @@ fn build_request_component(
                 detail.title.clone(),
                 uuid,
                 None,
-                false,
+                submitting,
             );
 
             container = container
@@ -306,12 +333,16 @@ fn build_request_component(
         }
     }
 
-    // Build the request button (disabled if selections still needed)
+    // Build the request button (disabled if selections still needed or already submitting)
     container = container.component(SeparatorBuilder::new().build());
     let request_button = ButtonBuilder::new(ButtonStyle::Primary)
-        .label("Request")
+        .label(if submitting {
+            "Requesting..."
+        } else {
+            "Request"
+        })
         .custom_id(format!("request:{uuid}"))
-        .disabled(selections_remaining)
+        .disabled(selections_remaining || submitting)
         .build();
 
     container = container.component(ActionRowBuilder::new().component(request_button).build());
@@ -326,39 +357,6 @@ fn build_completion_component(message: &SuccessMessage) -> Component {
         .component(TextDisplayBuilder::new(&message.description).build())
         .build()
         .into()
-}
-
-fn build_success_component(user_id: Id<UserMarker>, message: &SuccessMessage) -> Component {
-    let description_with_mention =
-        format!("{}\n\n-# Requested by <@{}>", message.description, user_id);
-
-    let mut container = ContainerBuilder::new().accent_color(Some(ACCENT_COLOR));
-
-    if let Some(url) = &message.thumbnail_url {
-        // Section with thumbnail and text
-        container = container.component(
-            SectionBuilder::new(
-                ThumbnailBuilder::new(UnfurledMediaItem {
-                    url: url.to_string(),
-                    proxy_url: None,
-                    height: None,
-                    width: None,
-                    content_type: None,
-                })
-                .build(),
-            )
-            .component(TextDisplayBuilder::new("# New Request").build())
-            .component(TextDisplayBuilder::new(&description_with_mention).build())
-            .build(),
-        );
-    } else {
-        container = container
-            .component(TextDisplayBuilder::new("# New Request").build())
-            .component(SeparatorBuilder::new().build())
-            .component(TextDisplayBuilder::new(&description_with_mention).build());
-    }
-
-    container.build().into()
 }
 
 #[derive(Debug)]
@@ -419,14 +417,13 @@ pub async fn run_interaction(
     }
 
     // Discord allows a maximum of 25 options in a dropdown
-    const MAX_RESULTS: usize = 25;
-    if results.len() > MAX_RESULTS {
+    if results.len() > MAX_DROPDOWN_OPTIONS {
         info!(
             "Truncating {} results to {} for Discord dropdown",
             results.len(),
-            MAX_RESULTS
+            MAX_DROPDOWN_OPTIONS
         );
-        results.truncate(MAX_RESULTS);
+        results.truncate(MAX_DROPDOWN_OPTIONS);
     }
 
     // Now update the interaction with all of the options that result from the search
@@ -441,14 +438,14 @@ pub async fn run_interaction(
     .await?;
 
     // Now wait for the user to select an option, which will come in on the channel
+    // An abandoned interaction is a normal outcome, not an error
     debug!("Waiting for user to select a search result");
-    let mut next = match timeout(Duration::from_secs(300), rx.recv()).await {
+    let mut next = match timeout(INTERACTION_TIMEOUT_DURATION, rx.recv()).await {
         Ok(Some(val)) => val,
-        Ok(None) => anyhow::bail!("Channel closed unexpectedly"),
-        Err(_) => {
-            info!("User selection timed out");
+        Ok(None) | Err(_) => {
+            info!("User abandoned the interaction at search result selection");
             update_timeout(&discord_http, application_id, &token).await?;
-            anyhow::bail!("Timed out waiting for user selection");
+            return Ok(());
         }
     };
     trace!(data = ?next, "Got the next interaction");
@@ -458,9 +455,9 @@ pub async fn run_interaction(
         .data
         .values
         .first()
-        .expect("Will always have one")
-        .parse()
-        .expect("Will always be a valid index");
+        .and_then(|v| v.parse().ok())
+        .filter(|idx| *idx < results.len())
+        .context("Search result selection didn't map to a valid result")?;
 
     let selection = results.remove(selection_idx);
     info!(index = selection_idx, "User made selection");
@@ -476,14 +473,14 @@ pub async fn run_interaction(
 
     // Now, we need to collect the additional information needed to perform the request
     debug!("Fetching additional details required");
-    let mut additional_details = backend.additional_details(&*selection);
+    let mut additional_details = backend.additional_details(&*selection).await?;
     trace!(details = ?additional_details, "Request details");
 
-    // Track which fields are user-selectable (have multiple options)
-    // These are the only ones we'll show in the UI
+    // Track which fields to show in the UI: ones the user must choose from
+    // (multiple options), plus ones the backend wants reviewed regardless
     let user_selectable_fields: std::collections::HashSet<_> = additional_details
         .iter()
-        .filter(|detail| detail.options.len() > 1)
+        .filter(|detail| detail.options.len() > 1 || detail.always_show)
         .filter_map(|detail| detail.metadata.as_ref())
         .cloned()
         .collect();
@@ -494,6 +491,7 @@ pub async fn run_interaction(
         &display_info,
         &additional_details,
         &user_selectable_fields,
+        false,
     );
 
     respond_interaction_component(
@@ -510,11 +508,10 @@ pub async fn run_interaction(
         debug!("Waiting for user to select a detail option");
         next = match timeout(INTERACTION_TIMEOUT_DURATION, rx.recv()).await {
             Ok(Some(val)) => val,
-            Ok(None) => anyhow::bail!("Channel closed unexpectedly"),
-            Err(_) => {
-                info!("User selection timed out");
-                update_timeout(&discord_http, application_id, &next.token).await?;
-                anyhow::bail!("Timed out waiting for user selection");
+            Ok(None) | Err(_) => {
+                info!("User abandoned the interaction at detail selection");
+                update_timeout(&discord_http, application_id, &token).await?;
+                return Ok(());
             }
         };
         trace!(data = ?next, "Got interaction from additional details");
@@ -523,7 +520,8 @@ pub async fn run_interaction(
         if next.data.custom_id.starts_with("request:") {
             info!("User clicked Request button, all details collected");
 
-            // Acknowledge the button click immediately (before 3-second timeout)
+            // Acknowledge the button click immediately (before 3-second timeout),
+            // disabling everything so it can't be clicked again while we submit
             respond_interaction_component(
                 &discord_http,
                 application_id,
@@ -534,6 +532,7 @@ pub async fn run_interaction(
                     &display_info,
                     &additional_details,
                     &user_selectable_fields,
+                    true,
                 ),
             )
             .await?;
@@ -541,31 +540,44 @@ pub async fn run_interaction(
             break;
         }
 
-        // Use this response to process the selection
-        let option_idx: usize = next
-            .data
-            .values
-            .first()
-            .expect("Will always have one")
-            .parse()
-            .expect("Will always be a valid index");
+        // Map the response back to one of our details, ignoring stale or malformed
+        // events (e.g. a second click on a dropdown we already collapsed)
+        let stale = 'event: {
+            let Some((title, _)) = next.data.custom_id.split_once(':') else {
+                break 'event Some("custom id has no uuid suffix");
+            };
+            let Some(detail_idx) = additional_details.iter().position(|x| x.title == title) else {
+                break 'event Some("no detail matching custom id");
+            };
+            let Some(option_idx) = next.data.values.first().and_then(|v| v.parse().ok()) else {
+                break 'event Some("selection value is not a valid index");
+            };
+            if additional_details[detail_idx].options.len() <= 1 {
+                break 'event Some("detail was already selected");
+            }
+            if option_idx >= additional_details[detail_idx].options.len() {
+                break 'event Some("selection index out of bounds");
+            }
 
-        let (title, _) = next
-            .data
-            .custom_id
-            .split_once(":")
-            .expect("There will always be two parts to the custom id");
+            let selected_option = additional_details[detail_idx].options.remove(option_idx);
+            debug!(detail = %title, selected = %selected_option.title, "User selected detail option");
 
-        let detail_idx = additional_details
-            .iter()
-            .position(|x| x.title == title)
-            .expect("There will always be one");
+            // Replace the vector of options with the selected option
+            additional_details[detail_idx].options = vec![selected_option];
+            None
+        };
 
-        let selected_option = additional_details[detail_idx].options.remove(option_idx);
-        debug!(detail = %title, selected = %selected_option.title, "User selected detail option");
-
-        // Replace the vector of options with the selected option
-        additional_details[detail_idx].options = vec![selected_option];
+        if let Some(reason) = stale {
+            debug!(data = ?next.data, reason = reason, "Ignoring component event");
+            ack_component(
+                &discord_http,
+                application_id,
+                next.interaction_id,
+                &next.token,
+            )
+            .await?;
+            continue;
+        }
 
         // Update the component to show the selection
         request_container = build_request_component(
@@ -573,6 +585,7 @@ pub async fn run_interaction(
             &display_info,
             &additional_details,
             &user_selectable_fields,
+            false,
         );
 
         respond_interaction_component(
@@ -610,12 +623,13 @@ pub async fn run_interaction(
     .context("Failed to send success response")?;
 
     // Send public message to channel if configured
+    // Plain content only: it's the one thing OS notification previews render,
+    // and richer styling here needs a UX pass (see README_DEVELOPER TODO)
     if public_followup {
-        let success_component = build_success_component(user_id, &success_msg);
+        let content = format!("{} requested by <@{}>", success_msg.summary, user_id);
         let result = discord_http
             .create_message(channel_id)
-            .flags(MessageFlags::IS_COMPONENTS_V2)
-            .components(&[success_component])
+            .content(&content)
             .await;
 
         if let Err(ref e) = result {

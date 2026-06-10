@@ -16,7 +16,7 @@ use radarr_api::{
         RootFolderResource,
     },
 };
-use tracing::{debug, error, info, trace};
+use tracing::{debug, error, info, trace, warn};
 
 /// Helper function to log detailed error information from Radarr API responses
 fn log_api_error<T: std::fmt::Debug>(err: &RadarrApiError<T>, context: &str) {
@@ -35,6 +35,31 @@ fn log_api_error<T: std::fmt::Debug>(err: &RadarrApiError<T>, context: &str) {
         }
         RadarrApiError::Io(e) => {
             error!("{} - IO error: {}", context, e);
+        }
+    }
+}
+
+/// Treat a 2xx response whose body fails to parse as success - by the time we're
+/// reading the body, Radarr has already applied the change
+fn tolerate_response_parse_error<T, E>(
+    result: std::result::Result<T, RadarrApiError<E>>,
+    context: &str,
+) -> Result<Option<T>>
+where
+    E: std::fmt::Debug + Send + Sync + 'static,
+{
+    match result {
+        Ok(x) => Ok(Some(x)),
+        Err(RadarrApiError::Serde(e)) => {
+            warn!(
+                "{} - succeeded, but the response body failed to parse: {}",
+                context, e
+            );
+            Ok(None)
+        }
+        Err(e) => {
+            log_api_error(&e, context);
+            Err(e.into())
         }
     }
 }
@@ -236,6 +261,7 @@ impl From<Details> for Vec<RequestDetails> {
             options: quality_profile_options,
             metadata: Some(field_keys::QUALITY_PROFILE.to_string()),
             field_type: FieldType::Dropdown,
+            always_show: false,
         };
 
         let rootfolder_options = details
@@ -257,6 +283,7 @@ impl From<Details> for Vec<RequestDetails> {
             options: rootfolder_options,
             metadata: Some(field_keys::ROOT_FOLDER.to_string()),
             field_type: FieldType::Dropdown,
+            always_show: false,
         };
 
         let monitor_options = details
@@ -282,6 +309,7 @@ impl From<Details> for Vec<RequestDetails> {
             options: monitor_options,
             metadata: Some(field_keys::MONITOR.to_string()),
             field_type: FieldType::Dropdown,
+            always_show: false,
         };
 
         let availability_options = details
@@ -308,6 +336,7 @@ impl From<Details> for Vec<RequestDetails> {
             options: availability_options,
             metadata: Some(field_keys::AVAILABILITY.to_string()),
             field_type: FieldType::Dropdown,
+            always_show: false,
         };
 
         vec![
@@ -329,11 +358,9 @@ impl TryFrom<Vec<RequestDetails>> for SelectedDetails {
         let mut minimum_availability = None;
 
         for detail in details {
-            let selection = detail
-                .options
-                .into_iter()
-                .next()
-                .expect("RequestDetails must have at least one option");
+            let Some(selection) = detail.options.into_iter().next() else {
+                bail!("No option was selected for '{}'", detail.title);
+            };
 
             match detail.metadata.as_deref() {
                 Some(field_keys::ROOT_FOLDER) => {
@@ -342,31 +369,31 @@ impl TryFrom<Vec<RequestDetails>> for SelectedDetails {
                 Some(field_keys::QUALITY_PROFILE) => {
                     quality_profile_id = match selection.id {
                         Some(SelectableId::Integer(i)) => Some(i),
-                        _ => panic!("Quality profile must have integer ID"),
+                        other => bail!("Quality profile must have an integer ID, got {other:?}"),
                     };
                 }
                 Some(field_keys::MONITOR) => {
                     monitor = match selection.id {
                         Some(SelectableId::String(s)) => Some(deserialize_from_string(&s)?),
-                        _ => panic!("Monitor must have string ID"),
+                        other => bail!("Monitor must have a string ID, got {other:?}"),
                     };
                 }
                 Some(field_keys::AVAILABILITY) => {
                     minimum_availability = match selection.id {
                         Some(SelectableId::String(s)) => Some(deserialize_from_string(&s)?),
-                        _ => panic!("Availability must have string ID"),
+                        other => bail!("Availability must have a string ID, got {other:?}"),
                     };
                 }
-                _ => panic!("Unknown metadata key: {:?}", detail.metadata),
+                other => bail!("Unknown metadata key: {other:?}"),
             }
         }
 
         Ok(Self {
-            rootfolder_path: root_folder_path.expect("Root folder must be selected"),
-            quality_profile_id: quality_profile_id.expect("Quality profile must be selected"),
-            monitor: monitor.expect("Monitor must be selected"),
+            rootfolder_path: root_folder_path.context("No root folder was selected")?,
+            quality_profile_id: quality_profile_id.context("No quality profile was selected")?,
+            monitor: monitor.context("No monitor type was selected")?,
             minimum_availability: minimum_availability
-                .expect("Minimum availability must be selected"),
+                .context("No minimum availability was selected")?,
         })
     }
 }
@@ -428,8 +455,8 @@ impl MediaBackend for Radarr {
         }
     }
 
-    fn additional_details(&self, _media: &dyn MediaItem) -> Vec<RequestDetails> {
-        self.details.clone().into()
+    async fn additional_details(&self, _media: &dyn MediaItem) -> Result<Vec<RequestDetails>> {
+        Ok(self.details.clone().into())
     }
 
     async fn request(&self, details: Vec<RequestDetails>, media: Box<dyn MediaItem>) -> Result<()> {
@@ -470,11 +497,10 @@ impl MediaBackend for Radarr {
         trace!("Full media object: {:#?}", media);
 
         // Make the API call
-        api_v3_movie_post(&self.config, Some(media))
-            .await
-            .inspect_err(|e| {
-                log_api_error(e, "Failed to add movie to Radarr");
-            })?;
+        tolerate_response_parse_error(
+            api_v3_movie_post(&self.config, Some(media)).await,
+            "Failed to add movie to Radarr",
+        )?;
 
         Ok(())
     }
@@ -494,6 +520,7 @@ impl MediaBackend for Radarr {
         let year = media.year.unwrap_or_default();
         SuccessMessage {
             title: "Request Successful".to_string(),
+            summary: format!("{title} ({year})"),
             description: format!(
                 "{title} ({year}) has been requested and will be downloaded when available.",
             ),

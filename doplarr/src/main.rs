@@ -100,8 +100,9 @@ async fn main() -> anyhow::Result<()> {
         backends.insert(media.as_str(), backend);
     }
 
-    // We only need to listen for interactions (commands are registered via HTTP on READY)
-    let mut shard = Shard::new(ShardId::ONE, config.discord_token.clone(), Intents::empty());
+    // We listen for interactions, plus guild events so we can register commands
+    // for every guild as Discord announces it (including guilds joined while running)
+    let mut shard = Shard::new(ShardId::ONE, config.discord_token.clone(), Intents::GUILDS);
 
     // Create the HTTP client we use to send data *back* to Discord
     let discord_http = Arc::new(HttpClient::new(config.discord_token));
@@ -114,6 +115,7 @@ async fn main() -> anyhow::Result<()> {
 
     // Build the list of media types we'll register commands for
     info!("Available backends: {:?}", media_types);
+    let command = discord::commands(media_types.iter().copied());
 
     // Cache interactions
     let cache = DefaultInMemoryCache::builder()
@@ -156,7 +158,11 @@ async fn main() -> anyhow::Result<()> {
 
     // Finally, process the stream of events as they come in
     while let Some(item) = shard
-        .next_event(EventTypeFlags::READY | EventTypeFlags::INTERACTION_CREATE)
+        .next_event(
+            EventTypeFlags::READY
+                | EventTypeFlags::GUILD_CREATE
+                | EventTypeFlags::INTERACTION_CREATE,
+        )
         .await
     {
         // Make sure we have a good event
@@ -172,38 +178,18 @@ async fn main() -> anyhow::Result<()> {
         match event {
             Event::Ready(_) => {
                 info!("Connected to Discord's server");
-
-                // Fetch all guilds the bot is in and register commands
-                match discord_http.current_user_guilds().await {
-                    Ok(guilds_response) => {
-                        let guilds = guilds_response.models().await.unwrap_or_default();
-                        info!("Bot is in {} guild(s)", guilds.len());
-
-                        let command = discord::commands(media_types.iter().copied());
-                        for guild in guilds {
-                            info!(
-                                "Registering commands to guild: {} ({})",
-                                guild.name, guild.id
-                            );
-
-                            if let Err(e) = discord_http
-                                .interaction(application_id)
-                                .set_guild_commands(guild.id, std::slice::from_ref(&command))
-                                .await
-                            {
-                                error!(error = %e, guild_id = %guild.id, "Failed to register commands to guild");
-                            } else {
-                                info!(
-                                    "Successfully registered {} subcommands to guild {}",
-                                    media_types.len(),
-                                    guild.id
-                                );
-                            }
-                        }
-                    }
-                    Err(e) => {
-                        error!(error = %e, "Failed to fetch guilds");
-                    }
+            }
+            // Discord sends one of these per guild after READY, and again whenever
+            // the bot joins a new guild, so this covers initial and runtime registration
+            Event::GuildCreate(guild) => {
+                let guild_id = guild.id();
+                info!(guild_id = %guild_id, "Registering commands to guild");
+                if let Err(e) = discord_http
+                    .interaction(application_id)
+                    .set_guild_commands(guild_id, std::slice::from_ref(&command))
+                    .await
+                {
+                    error!(error = %e, guild_id = %guild_id, "Failed to register commands to guild");
                 }
             }
             Event::InteractionCreate(interaction) => {
@@ -224,7 +210,7 @@ async fn main() -> anyhow::Result<()> {
                             (subcommand.name.clone(), value.clone())
                         } else {
                             warn!(data = ?command_data, "Interaction body didn't match what we expected",);
-                            return Ok(());
+                            continue;
                         };
                         info!(kind = media_kind, query = query, "Got search request");
 
@@ -271,14 +257,23 @@ async fn main() -> anyhow::Result<()> {
                                 // Keep token for error handling
                                 let interaction_token = start.token.clone();
 
-                                if let Err(e) = discord::run_interaction(
+                                // Run the flow in its own task so a panic is contained here
+                                // instead of silently killing the interaction
+                                let result = match tokio::spawn(discord::run_interaction(
                                     start,
                                     discord_http.clone(),
                                     backend,
                                     public_followup,
-                                )
+                                ))
                                 .await
                                 {
+                                    Ok(result) => result,
+                                    Err(join_err) => Err(anyhow::anyhow!(
+                                        "Interaction task panicked: {join_err}"
+                                    )),
+                                };
+
+                                if let Err(e) = result {
                                     // Log full error details for admin debugging
                                     error!(error = %e, "Failed to run coroutine to completion");
 
@@ -322,12 +317,17 @@ async fn main() -> anyhow::Result<()> {
                                         interaction_id: interaction.id,
                                         token: interaction.token.clone(),
                                     };
-                                    // Try to send, if it doesn't work that means the other side timed out
+                                    // Try to send, distinguishing "coroutine busy" from "coroutine gone"
                                     match tx.try_send(cont) {
                                         Ok(_) => {
                                             trace!("Sent continuation to interaction coroutine");
                                         }
-                                        Err(_) => {
+                                        Err(mpsc::error::TrySendError::Full(_)) => {
+                                            // The coroutine is still processing the previous event
+                                            // (e.g. the user is clicking quickly); drop this one
+                                            debug!(uuid = %uuid, "Interaction coroutine busy, dropping extra event");
+                                        }
+                                        Err(mpsc::error::TrySendError::Closed(_)) => {
                                             // Other side timed out
                                             warn!(uuid = %uuid, "Interaction coroutine timed out");
                                             discord::update_timeout(

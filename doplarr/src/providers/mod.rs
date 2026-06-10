@@ -55,6 +55,9 @@ pub struct RequestDetails {
     pub metadata: Option<String>,
     /// Type of field
     pub field_type: FieldType,
+    /// Show this field even when only a single option remains - single-option
+    /// fields are otherwise hidden, as they represent admin-configured defaults
+    pub always_show: bool,
 }
 
 /// Represents the media selection box as presented by discord
@@ -68,6 +71,9 @@ pub struct MediaDisplayInfo {
 /// Represents the success block shown by discord
 pub struct SuccessMessage {
     pub title: String,
+    /// Short one-liner identifying what was requested, e.g. "Title (Year) (Season 2)"
+    /// Used as message content so OS notifications have something to show
+    pub summary: String,
     pub description: String,
     pub thumbnail_url: Option<String>,
 }
@@ -94,7 +100,7 @@ pub trait MediaBackend: Send + Sync {
     fn display_info(&self, media: &dyn MediaItem) -> MediaDisplayInfo;
 
     /// Return the additional details we want to collect in order to complete a request
-    fn additional_details(&self, media: &dyn MediaItem) -> Vec<RequestDetails>;
+    async fn additional_details(&self, media: &dyn MediaItem) -> Result<Vec<RequestDetails>>;
 
     /// Perform the request with the backend, using the information gathered
     /// from the media search result and the additional details

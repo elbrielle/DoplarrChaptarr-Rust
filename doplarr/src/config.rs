@@ -39,6 +39,8 @@ pub enum BackendConfig {
         season_folders: Option<bool>,
         /// Restrict which monitor types users can select (e.g., to prevent "All")
         allowed_monitor_types: Option<Vec<SonarrMonitor>>,
+        /// Offer Season 0 (specials) when requesting seasons of existing series (default: false)
+        allow_specials: Option<bool>,
     },
 }
 
