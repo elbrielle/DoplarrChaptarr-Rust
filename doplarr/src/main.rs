@@ -70,6 +70,12 @@ async fn main() -> anyhow::Result<()> {
         EnvFilter::try_from_default_env().unwrap_or_else(|_| EnvFilter::new(log_level));
     tracing_subscriber::fmt().with_env_filter(env_filter).init();
 
+    info!(
+        version = env!("CARGO_PKG_VERSION"),
+        git_hash = env!("GIT_HASH"),
+        "Starting doplarr"
+    );
+
     // Check that we have at least one backend client
     if config.backends.is_empty() {
         bail!("At least one media backend is required!");
