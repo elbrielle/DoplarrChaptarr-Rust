@@ -6,9 +6,7 @@ license.workspace = true
 
 [dependencies]
 anyhow = "1"
-reqwest = { version = "0.13", default-features = false, features = [
-  "native-tls",
-] }
+reqwest = { version = "0.13", default-features = false, features = ["rustls"] }
 tokio = { version = "1", features = ["full"] }
 tracing = "0.1"
 tracing-subscriber = { version = "0.3", features = ["env-filter"] }
@@ -26,12 +24,12 @@ seerr_api = { path = "../seerr_api" }
 
 # Discord libraries
 twilight-http = { version = "0.17", default-features = false, features = [
-  "native-tls",
+  "rustls-platform-verifier",
 ] }
 twilight-model = "0.17"
 twilight-util = { version = "0.17", features = ["builder"] }
 twilight-gateway = { version = "0.17", default-features = false, features = [
-  "native-tls",
+  "rustls-platform-verifier",
   "twilight-http",
 ] }
 twilight-cache-inmemory = "0.17"

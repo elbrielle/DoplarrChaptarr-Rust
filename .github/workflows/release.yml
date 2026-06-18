@@ -1,0 +1,92 @@
+name: Release
+
+on:
+    push:
+        tags:
+            - 'v*'
+
+permissions:
+    contents: write
+    packages: write
+
+jobs:
+    build-linux:
+        name: Build Linux artifacts
+        runs-on: ubuntu-latest
+        steps:
+            - name: Checkout repository
+              uses: actions/checkout@v4
+
+            - name: Install Nix
+              uses: DeterminateSystems/nix-installer-action@v13
+
+            - name: Setup Nix cache
+              uses: DeterminateSystems/magic-nix-cache-action@v7
+
+            - name: Build x86_64 musl binary
+              run: |
+                  nix build .#static --print-build-logs
+                  cp result/bin/doplarr doplarr-x86_64-unknown-linux-musl
+
+            - name: Build aarch64 musl binary
+              run: |
+                  nix build .#staticAarch64 --print-build-logs
+                  cp result/bin/doplarr doplarr-aarch64-unknown-linux-musl
+
+            - name: Build Docker images
+              run: |
+                  nix build .#dockerImage --print-build-logs
+                  docker load < result
+                  docker tag ghcr.io/kiranshila/doplarr_rs:latest ghcr.io/kiranshila/doplarr_rs:${{ github.ref_name }}-amd64
+                  nix build .#dockerImageAarch64 --print-build-logs
+                  docker load < result
+                  docker tag ghcr.io/kiranshila/doplarr_rs:latest ghcr.io/kiranshila/doplarr_rs:${{ github.ref_name }}-arm64
+
+            - name: Log in to GitHub Container Registry
+              uses: docker/login-action@v3
+              with:
+                  registry: ghcr.io
+                  username: ${{ github.actor }}
+                  password: ${{ secrets.GITHUB_TOKEN }}
+
+            - name: Push images and create multi-arch manifest
+              run: |
+                  docker push ghcr.io/kiranshila/doplarr_rs:${{ github.ref_name }}-amd64
+                  docker push ghcr.io/kiranshila/doplarr_rs:${{ github.ref_name }}-arm64
+                  docker buildx imagetools create \
+                    -t ghcr.io/kiranshila/doplarr_rs:${{ github.ref_name }} \
+                    -t ghcr.io/kiranshila/doplarr_rs:latest \
+                    ghcr.io/kiranshila/doplarr_rs:${{ github.ref_name }}-amd64 \
+                    ghcr.io/kiranshila/doplarr_rs:${{ github.ref_name }}-arm64
+
+            - name: Upload Linux binaries to release
+              uses: softprops/action-gh-release@v2
+              with:
+                  files: |
+                      doplarr-x86_64-unknown-linux-musl
+                      doplarr-aarch64-unknown-linux-musl
+
+    build-windows:
+        name: Build Windows artifact
+        runs-on: windows-latest
+        steps:
+            - name: Checkout repository
+              uses: actions/checkout@v4
+
+            - name: Install Rust
+              uses: dtolnay/rust-toolchain@master
+              with:
+                  toolchain: "1.96"
+
+            - name: Cache Rust artifacts
+              uses: Swatinem/rust-cache@v2
+
+            - name: Build Windows binary
+              run: |
+                  cargo build --release -p doplarr
+                  cp target/release/doplarr.exe doplarr-x86_64-pc-windows-msvc.exe
+
+            - name: Upload Windows binary to release
+              uses: softprops/action-gh-release@v2
+              with:
+                  files: doplarr-x86_64-pc-windows-msvc.exe

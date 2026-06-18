@@ -44,11 +44,10 @@
           inherit src;
           strictDeps = true;
           nativeBuildInputs = with pkgs;
-            [pkg-config]
-            ++ lib.optionals stdenv.isDarwin [
-              libiconv
-            ];
-          buildInputs = with pkgs; [openssl];
+            [cmake]
+            ++ lib.optionals stdenv.isx86_64 [nasm]
+            ++ lib.optionals stdenv.isDarwin [libiconv];
+          buildInputs = [];
         };
 
         cargoArtifacts = craneLib.buildDepsOnly commonArgs;
@@ -60,6 +59,53 @@
             cargoExtraArgs = "-p doplarr";
           }
         );
+
+        # Static musl binary (Linux x86_64 only)
+        muslPkgs = pkgs.pkgsCross.musl64;
+        muslCC = "${muslPkgs.stdenv.cc}/bin/${muslPkgs.stdenv.cc.targetPrefix}cc";
+        muslAR = "${muslPkgs.stdenv.cc}/bin/${muslPkgs.stdenv.cc.targetPrefix}ar";
+
+        commonArgsMusl = commonArgs // {
+          CARGO_BUILD_TARGET = "x86_64-unknown-linux-musl";
+          CARGO_BUILD_RUSTFLAGS = "-C target-feature=+crt-static";
+          "CARGO_TARGET_X86_64_UNKNOWN_LINUX_MUSL_LINKER" = muslCC;
+          "CC_x86_64_unknown_linux_musl" = muslCC;
+          "AR_x86_64_unknown_linux_musl" = muslAR;
+          nativeBuildInputs = commonArgs.nativeBuildInputs ++ [muslPkgs.stdenv.cc];
+          doCheck = false;
+        };
+
+        cargoArtifactsMusl = craneLib.buildDepsOnly commonArgsMusl;
+
+        doplarrStatic = craneLib.buildPackage (commonArgsMusl // {
+          cargoArtifacts = cargoArtifactsMusl;
+          pname = "doplarr";
+          cargoExtraArgs = "-p doplarr";
+        });
+
+        # Static musl binary — aarch64
+        aarch64MuslPkgs = pkgs.pkgsCross.aarch64-multiplatform-musl;
+        aarch64CC = "${aarch64MuslPkgs.stdenv.cc}/bin/${aarch64MuslPkgs.stdenv.cc.targetPrefix}cc";
+        aarch64AR = "${aarch64MuslPkgs.stdenv.cc}/bin/${aarch64MuslPkgs.stdenv.cc.targetPrefix}ar";
+
+        commonArgsAarch64Musl = commonArgs // {
+          CARGO_BUILD_TARGET = "aarch64-unknown-linux-musl";
+          CARGO_BUILD_RUSTFLAGS = "-C target-feature=+crt-static";
+          "CARGO_TARGET_AARCH64_UNKNOWN_LINUX_MUSL_LINKER" = aarch64CC;
+          "CC_aarch64_unknown_linux_musl" = aarch64CC;
+          "AR_aarch64_unknown_linux_musl" = aarch64AR;
+          nativeBuildInputs = commonArgs.nativeBuildInputs ++ [aarch64MuslPkgs.stdenv.cc];
+          doCheck = false;
+        };
+
+        cargoArtifactsAarch64Musl = craneLib.buildDepsOnly commonArgsAarch64Musl;
+
+        doplarrStaticAarch64 = craneLib.buildPackage (commonArgsAarch64Musl // {
+          cargoArtifacts = cargoArtifactsAarch64Musl;
+          pname = "doplarr";
+          cargoExtraArgs = "-p doplarr";
+        });
+
       in {
         checks = {
           # Build the crates as part of `nix flake check` for convenience
@@ -92,25 +138,42 @@
           };
         };
 
-        packages = {
-          default = doplarr;
+        packages =
+          {
+            default = doplarr;
+          }
+          // lib.optionalAttrs pkgs.stdenv.isLinux {
+            static = doplarrStatic;
+            staticAarch64 = doplarrStaticAarch64;
 
-          # Docker image
-          dockerImage = pkgs.dockerTools.buildLayeredImage {
-            name = "ghcr.io/kiranshila/doplarr_rs";
-            tag = "latest";
-
-            contents = [doplarr pkgs.cacert];
-
-            config = {
-              Cmd = ["${doplarr}/bin/doplarr"];
-              ExposedPorts = {};
-              Env = [
-                "SSL_CERT_FILE=${pkgs.cacert}/etc/ssl/certs/ca-bundle.crt"
-              ];
+            dockerImage = pkgs.dockerTools.buildLayeredImage {
+              name = "ghcr.io/kiranshila/doplarr_rs";
+              tag = "latest";
+              contents = [doplarrStatic pkgs.cacert];
+              config = {
+                Cmd = ["${doplarrStatic}/bin/doplarr"];
+                ExposedPorts = {};
+                Env = [
+                  "SSL_CERT_FILE=${pkgs.cacert}/etc/ssl/certs/ca-bundle.crt"
+                ];
+              };
             };
+
+            dockerImageAarch64 = pkgs.dockerTools.buildLayeredImage {
+              name = "ghcr.io/kiranshila/doplarr_rs";
+              tag = "latest";
+              architecture = "arm64";
+              contents = [doplarrStaticAarch64 pkgs.cacert];
+              config = {
+                Cmd = ["${doplarrStaticAarch64}/bin/doplarr"];
+                ExposedPorts = {};
+                Env = [
+                  "SSL_CERT_FILE=${pkgs.cacert}/etc/ssl/certs/ca-bundle.crt"
+                ];
+              };
+            };
+
           };
-        };
 
         apps.default = flake-utils.lib.mkApp {
           drv = doplarr;

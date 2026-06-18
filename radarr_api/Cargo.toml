@@ -23,6 +23,6 @@ reqwest = { version = "^0.13", default-features = false, features = [
 ] }
 
 [features]
-default = ["native-tls"]
+default = ["rustls-tls"]
 native-tls = ["reqwest/native-tls"]
 rustls-tls = ["reqwest/rustls"]
