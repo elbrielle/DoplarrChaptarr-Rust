@@ -50,8 +50,10 @@ pub struct DropdownOption {
 /// Type of field for the request detail
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum FieldType {
-    /// Enum/list selection
+    /// Single-item enum/list selection
     Dropdown,
+    /// Multiple-item selection; selected indices tracked in `RequestDetails::selected_indices`
+    MultiSelect,
     /// Boolean yes/no selection
     Boolean,
 }
@@ -63,6 +65,9 @@ pub struct RequestDetails {
     pub title: String,
     /// Options to select
     pub options: Vec<DropdownOption>,
+    /// For `MultiSelect` fields: indices into `options` that the user has currently chosen.
+    /// Always empty for other field types.
+    pub selected_indices: Vec<usize>,
     /// Backend-specific metadata
     pub metadata: Option<String>,
     /// Type of field

@@ -284,6 +284,7 @@ impl From<Details> for Vec<RequestDetails> {
             title: "Quality Profile".to_string(),
             options: quality_profile_options,
             metadata: Some(field_keys::QUALITY_PROFILE.to_string()),
+            selected_indices: vec![],
             field_type: FieldType::Dropdown,
             always_show: false,
         };
@@ -308,6 +309,7 @@ impl From<Details> for Vec<RequestDetails> {
             title: "Root Folder".to_string(),
             options: rootfolder_options,
             metadata: Some(field_keys::ROOT_FOLDER.to_string()),
+            selected_indices: vec![],
             field_type: FieldType::Dropdown,
             always_show: false,
         };
@@ -345,6 +347,7 @@ impl From<Details> for Vec<RequestDetails> {
             title: "Monitor".to_string(),
             options: monitor_options,
             metadata: Some(field_keys::MONITOR.to_string()),
+            selected_indices: vec![],
             field_type: FieldType::Dropdown,
             always_show: false,
         };
@@ -380,6 +383,7 @@ impl From<Details> for Vec<RequestDetails> {
             title: "Use Season Folders".to_string(),
             options: season_folder_options,
             metadata: Some(field_keys::SEASON_FOLDER.to_string()),
+            selected_indices: vec![],
             field_type: FieldType::Boolean,
             always_show: false,
         };
@@ -610,6 +614,7 @@ impl MediaBackend for Sonarr {
                         title: "Season to Monitor".to_string(),
                         options: season_options,
                         metadata: Some(field_keys::SEASON.to_string()),
+                        selected_indices: vec![],
                         field_type: FieldType::Dropdown,
                         // Even a lone season should be reviewable before requesting
                         always_show: true,
@@ -653,6 +658,7 @@ impl MediaBackend for Sonarr {
                     id: Some(SelectableId::String(series_type.to_string())),
                 }],
                 metadata: Some(field_keys::SERIES_TYPE.to_string()),
+                selected_indices: vec![],
                 field_type: FieldType::Dropdown,
                 always_show: false,
             });

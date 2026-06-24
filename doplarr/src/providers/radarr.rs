@@ -262,6 +262,7 @@ impl From<Details> for Vec<RequestDetails> {
             title: "Quality Profile".to_string(),
             options: quality_profile_options,
             metadata: Some(field_keys::QUALITY_PROFILE.to_string()),
+            selected_indices: vec![],
             field_type: FieldType::Dropdown,
             always_show: false,
         };
@@ -286,6 +287,7 @@ impl From<Details> for Vec<RequestDetails> {
             title: "Root Folder".to_string(),
             options: rootfolder_options,
             metadata: Some(field_keys::ROOT_FOLDER.to_string()),
+            selected_indices: vec![],
             field_type: FieldType::Dropdown,
             always_show: false,
         };
@@ -312,6 +314,7 @@ impl From<Details> for Vec<RequestDetails> {
             title: "Monitor".to_string(),
             options: monitor_options,
             metadata: Some(field_keys::MONITOR.to_string()),
+            selected_indices: vec![],
             field_type: FieldType::Dropdown,
             always_show: false,
         };
@@ -339,6 +342,7 @@ impl From<Details> for Vec<RequestDetails> {
             title: "Minimum Availability".to_string(),
             options: availability_options,
             metadata: Some(field_keys::AVAILABILITY.to_string()),
+            selected_indices: vec![],
             field_type: FieldType::Dropdown,
             always_show: false,
         };

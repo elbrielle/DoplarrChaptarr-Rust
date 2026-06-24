@@ -81,7 +81,6 @@ pub struct Seerr {
     config: Configuration,
     fallback_user_id: Option<i32>,
     allow_4k: bool,
-    allow_all_seasons: bool,
     media_filter: Option<MediaKind>,
     user_cache: RwLock<Option<UserMapCache>>,
 }
@@ -102,7 +101,6 @@ impl Seerr {
             fallback_user_id,
             allow_4k,
             media_filter,
-            allow_all_seasons,
         } = backend
         else {
             bail!("Expected Seerr config");
@@ -126,7 +124,6 @@ impl Seerr {
             config,
             fallback_user_id,
             allow_4k: allow_4k.unwrap_or(false),
-            allow_all_seasons: allow_all_seasons.unwrap_or(true),
             media_filter,
             user_cache: RwLock::new(None),
         })
@@ -379,6 +376,7 @@ impl MediaBackend for Seerr {
                     id: Some(SelectableId::Boolean(true)),
                 },
             ],
+            selected_indices: vec![],
             metadata: Some("seerr:is_4k".into()),
             field_type: FieldType::Dropdown,
             always_show: true,
@@ -394,17 +392,7 @@ impl MediaBackend for Seerr {
             "Fetching TV details",
         )?;
 
-        let mut options = if self.allow_all_seasons {
-            vec![DropdownOption {
-                title: "All Seasons".into(),
-                description: None,
-                id: Some(SelectableId::String("all".into())),
-            }]
-        } else {
-            vec![]
-        };
-
-        let season_options: Vec<_> = details
+        let mut options: Vec<DropdownOption> = details
             .seasons
             .unwrap_or_default()
             .into_iter()
@@ -419,11 +407,10 @@ impl MediaBackend for Seerr {
             })
             .collect();
 
-        if season_options.is_empty() {
+        if options.is_empty() {
             bail!(UserFacingError("No requestable seasons found.".into()));
         }
 
-        options.extend(season_options);
         if options.len() > MAX_DROPDOWN_OPTIONS {
             warn!(
                 showing = MAX_DROPDOWN_OPTIONS,
@@ -436,8 +423,9 @@ impl MediaBackend for Seerr {
         let season_step = RequestDetails {
             title: "Season".into(),
             options,
+            selected_indices: vec![],
             metadata: Some("seerr:season".into()),
-            field_type: FieldType::Dropdown,
+            field_type: FieldType::MultiSelect,
             always_show: true,
         };
 
@@ -488,15 +476,18 @@ impl MediaBackend for Seerr {
             details
                 .iter()
                 .find(|d| d.metadata.as_deref() == Some("seerr:season"))
-                .and_then(|d| d.options.first())
-                .and_then(|o| match &o.id {
-                    Some(SelectableId::String(s)) => {
-                        Some(RequestPostRequestSeasons::String(s.clone()))
-                    }
-                    Some(SelectableId::Integer(n)) => {
-                        Some(RequestPostRequestSeasons::ArrayVecf64(vec![*n as f64]))
-                    }
-                    _ => None,
+                .map(|d| {
+                    let mut nums: Vec<f64> = d
+                        .selected_indices
+                        .iter()
+                        .filter_map(|&i| d.options.get(i))
+                        .filter_map(|o| match &o.id {
+                            Some(SelectableId::Integer(n)) => Some(*n as f64),
+                            _ => None,
+                        })
+                        .collect();
+                    nums.sort_by(|a, b| a.partial_cmp(b).unwrap());
+                    RequestPostRequestSeasons::ArrayVecf64(nums)
                 })
         } else {
             None
@@ -542,11 +533,28 @@ impl MediaBackend for Seerr {
         let season_suffix = details
             .iter()
             .find(|d| d.metadata.as_deref() == Some("seerr:season"))
-            .and_then(|d| d.options.first())
-            .map(|o| match &o.id {
-                Some(SelectableId::String(_)) => " (All Seasons)".to_string(),
-                Some(SelectableId::Integer(n)) => format!(" (Season {n})"),
-                _ => String::new(),
+            .map(|d| {
+                let mut nums: Vec<i32> = d
+                    .selected_indices
+                    .iter()
+                    .filter_map(|&i| d.options.get(i))
+                    .filter_map(|o| match &o.id {
+                        Some(SelectableId::Integer(n)) => Some(*n),
+                        _ => None,
+                    })
+                    .collect();
+                nums.sort();
+                match nums.as_slice() {
+                    [] => String::new(),
+                    [n] => format!(" (Season {n})"),
+                    _ => format!(
+                        " (Seasons {})",
+                        nums.iter()
+                            .map(|n| n.to_string())
+                            .collect::<Vec<_>>()
+                            .join(", ")
+                    ),
+                }
             })
             .unwrap_or_default();
 

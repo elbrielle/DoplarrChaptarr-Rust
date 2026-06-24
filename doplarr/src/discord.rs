@@ -1,5 +1,5 @@
 use crate::providers::{
-    DropdownOption, MediaBackend, MediaDisplayInfo, RequestDetails, SuccessMessage,
+    DropdownOption, FieldType, MediaBackend, MediaDisplayInfo, RequestDetails, SuccessMessage,
 };
 use anyhow::Context;
 use std::{sync::Arc, time::Duration};
@@ -173,19 +173,25 @@ pub async fn send_thinking(
     Ok(())
 }
 
-/// Convert a vector of [DropdownOption] into a discord Select Menu, keyed by the vec index
+/// Convert a vector of [DropdownOption] into a discord Select Menu, keyed by the vec index.
+/// When `max_values` is `Some(n)`, the menu allows selecting 1–n items (multi-select).
 fn dropdown_options_to_select_menu<T: AsRef<str>>(
     options: Vec<DropdownOption>,
     id: T,
     uuid: Uuid,
     placeholder: Option<String>,
     disabled: bool,
+    max_values: Option<u8>,
 ) -> ActionRow {
     let mut menu = SelectMenuBuilder::new(format!("{}:{uuid}", id.as_ref()), SelectMenuType::Text)
         .disabled(disabled);
 
     if let Some(placeholder) = placeholder {
         menu = menu.placeholder(placeholder);
+    }
+
+    if let Some(max) = max_values {
+        menu = menu.min_values(1).max_values(max);
     }
 
     for (i, option) in options.into_iter().enumerate() {
@@ -207,7 +213,7 @@ pub async fn update_search_results_component(
     application_id: Id<ApplicationMarker>,
     interaction_token: &str,
 ) -> anyhow::Result<()> {
-    let dropdown = dropdown_options_to_select_menu(options, "result", uuid, None, false);
+    let dropdown = dropdown_options_to_select_menu(options, "result", uuid, None, false, None);
 
     let component = ContainerBuilder::new()
         .accent_color(Some(ACCENT_COLOR))
@@ -320,29 +326,63 @@ fn build_request_component(
             continue;
         }
 
-        if detail.options.len() > 1 {
-            // User needs to choose - show dropdown
-            selections_remaining = true;
-            let row = dropdown_options_to_select_menu(
-                detail.options.clone(),
-                detail.title.clone(),
-                uuid,
-                None,
-                submitting,
-            );
-
-            container = container
-                .component(SeparatorBuilder::new().build())
-                .component(TextDisplayBuilder::new(format!("### {}", detail.title)).build())
-                .component(row);
-        } else if detail.options.len() == 1 {
-            // User has selected - show as text for review
-            let selection = detail.options.first().unwrap().title.clone();
-            container = container
-                .component(SeparatorBuilder::new().build())
-                .component(
-                    TextDisplayBuilder::new(format!("### {}\n{}", detail.title, selection)).build(),
+        match detail.field_type {
+            FieldType::MultiSelect => {
+                if detail.selected_indices.is_empty() {
+                    selections_remaining = true;
+                }
+                let max = (detail.options.len() as u8).min(MAX_DROPDOWN_OPTIONS as u8);
+                let row = dropdown_options_to_select_menu(
+                    detail.options.clone(),
+                    detail.title.clone(),
+                    uuid,
+                    None,
+                    submitting,
+                    Some(max),
                 );
+                container = container
+                    .component(SeparatorBuilder::new().build())
+                    .component(TextDisplayBuilder::new(format!("### {}", detail.title)).build())
+                    .component(row);
+                if !detail.selected_indices.is_empty() {
+                    let selected: String = detail
+                        .selected_indices
+                        .iter()
+                        .filter_map(|&i| detail.options.get(i))
+                        .map(|o| o.title.as_str())
+                        .collect::<Vec<_>>()
+                        .join(", ");
+                    container = container
+                        .component(TextDisplayBuilder::new(format!("-# {selected}")).build());
+                }
+            }
+            _ => {
+                if detail.options.len() > 1 {
+                    // User needs to choose - show dropdown
+                    selections_remaining = true;
+                    let row = dropdown_options_to_select_menu(
+                        detail.options.clone(),
+                        detail.title.clone(),
+                        uuid,
+                        None,
+                        submitting,
+                        None,
+                    );
+                    container = container
+                        .component(SeparatorBuilder::new().build())
+                        .component(TextDisplayBuilder::new(format!("### {}", detail.title)).build())
+                        .component(row);
+                } else if detail.options.len() == 1 {
+                    // User has selected - show as text for review
+                    let selection = detail.options.first().unwrap().title.clone();
+                    container = container
+                        .component(SeparatorBuilder::new().build())
+                        .component(
+                            TextDisplayBuilder::new(format!("### {}\n{}", detail.title, selection))
+                                .build(),
+                        );
+                }
+            }
         }
     }
 
@@ -583,21 +623,31 @@ pub async fn run_interaction(
             let Some(detail_idx) = additional_details.iter().position(|x| x.title == title) else {
                 break 'event Some("no detail matching custom id");
             };
-            let Some(option_idx) = next.data.values.first().and_then(|v| v.parse().ok()) else {
-                break 'event Some("selection value is not a valid index");
-            };
-            if additional_details[detail_idx].options.len() <= 1 {
-                break 'event Some("detail was already selected");
-            }
-            if option_idx >= additional_details[detail_idx].options.len() {
-                break 'event Some("selection index out of bounds");
-            }
 
-            let selected_option = additional_details[detail_idx].options.remove(option_idx);
-            debug!(detail = %title, selected = %selected_option.title, "User selected detail option");
-
-            // Replace the vector of options with the selected option
-            additional_details[detail_idx].options = vec![selected_option];
+            if additional_details[detail_idx].field_type == FieldType::MultiSelect {
+                let indices: Vec<usize> = next
+                    .data
+                    .values
+                    .iter()
+                    .filter_map(|v| v.parse().ok())
+                    .filter(|&i| i < additional_details[detail_idx].options.len())
+                    .collect();
+                debug!(detail = %title, count = indices.len(), "User updated multi-select");
+                additional_details[detail_idx].selected_indices = indices;
+            } else {
+                let Some(option_idx) = next.data.values.first().and_then(|v| v.parse().ok()) else {
+                    break 'event Some("selection value is not a valid index");
+                };
+                if additional_details[detail_idx].options.len() <= 1 {
+                    break 'event Some("detail was already selected");
+                }
+                if option_idx >= additional_details[detail_idx].options.len() {
+                    break 'event Some("selection index out of bounds");
+                }
+                let selected_option = additional_details[detail_idx].options.remove(option_idx);
+                debug!(detail = %title, selected = %selected_option.title, "User selected detail option");
+                additional_details[detail_idx].options = vec![selected_option];
+            }
             None
         };
 
@@ -632,8 +682,11 @@ pub async fn run_interaction(
         .await?;
         trace!("Updated component with selection");
 
-        // Check if all the detail options have only one item in them
-        if additional_details.iter().all(|x| x.options.len() == 1) {
+        // Check if all details have been resolved
+        if additional_details.iter().all(|x| match x.field_type {
+            FieldType::MultiSelect => !x.selected_indices.is_empty(),
+            _ => x.options.len() == 1,
+        }) {
             debug!("All details have been selected, waiting for final Request button click");
         }
     }

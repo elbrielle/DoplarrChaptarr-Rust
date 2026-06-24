@@ -61,9 +61,6 @@ pub enum BackendConfig {
         /// Restrict search results to a single media kind.
         /// When absent, both movies and TV shows are returned.
         media_filter: Option<MediaKind>,
-        /// Allow users to request all seasons at once (default: true).
-        /// Set to false to require users to pick a specific season.
-        allow_all_seasons: Option<bool>,
     },
 }
 
@@ -151,7 +148,6 @@ mod tests {
                     fallback_user_id: Some(1),
                     allow_4k: None,
                     media_filter: None,
-                    allow_all_seasons: None,
                 },
             }],
             log_level: None,
