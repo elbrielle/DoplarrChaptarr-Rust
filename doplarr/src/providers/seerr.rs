@@ -78,6 +78,7 @@ pub struct Seerr {
     config: Configuration,
     fallback_user_id: Option<i32>,
     allow_4k: bool,
+    allow_all_seasons: bool,
     media_filter: Option<MediaKind>,
     user_cache: RwLock<Option<UserMapCache>>,
 }
@@ -98,6 +99,7 @@ impl Seerr {
             fallback_user_id,
             allow_4k,
             media_filter,
+            allow_all_seasons,
         } = backend
         else {
             bail!("Expected Seerr config");
@@ -121,6 +123,7 @@ impl Seerr {
             config,
             fallback_user_id,
             allow_4k: allow_4k.unwrap_or(false),
+            allow_all_seasons: allow_all_seasons.unwrap_or(true),
             media_filter,
             user_cache: RwLock::new(None),
         })
@@ -388,11 +391,15 @@ impl MediaBackend for Seerr {
             "Fetching TV details",
         )?;
 
-        let mut options = vec![DropdownOption {
-            title: "All Seasons".into(),
-            description: None,
-            id: Some(SelectableId::String("all".into())),
-        }];
+        let mut options = if self.allow_all_seasons {
+            vec![DropdownOption {
+                title: "All Seasons".into(),
+                description: None,
+                id: Some(SelectableId::String("all".into())),
+            }]
+        } else {
+            vec![]
+        };
 
         let season_options: Vec<_> = details
             .seasons
