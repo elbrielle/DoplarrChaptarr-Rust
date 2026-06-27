@@ -1,5 +1,9 @@
 # Doplarr Configuration Example
 # Copy this file to config.toml and update with your settings
+#
+# Any value can pull from an environment variable with ${VAR}, e.g.
+#   api_key = "${SEERR_API_KEY}"
+# An unset referenced variable is a startup error; ${...} in comments is ignored.
 
 # ==============================================================================
 # REQUIRED SETTINGS

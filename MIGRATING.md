@@ -36,6 +36,28 @@ api_key = "your_radarr_api_key"
 
 The `media` field sets the name of the `/request <media>` slash command. You can name it anything you want — `series`, `tv`, `movie`, `film`, etc.
 
+## Environment variables (no config file)
+
+If you ran the Clojure bot with **only environment variables and no mounted config**, that keeps working — the Rust bot detects the same legacy variables on startup, builds a config from them, and runs. No config file or volume required.
+
+| Setting | Variable |
+|---|---|
+| Discord token | `DISCORD__TOKEN` |
+| Seerr / Overseerr | `OVERSEERR__URL`, `OVERSEERR__API`, `OVERSEERR__DEFAULT_ID` |
+| Sonarr | `SONARR__URL`, `SONARR__API` |
+| Radarr | `RADARR__URL`, `RADARR__API` |
+| Log level | `LOG_LEVEL` |
+
+Only connection settings (URL/API, plus the Seerr fallback user) are read from the environment; per-backend options like quality profiles are no longer prompted via env vars — set them by mounting a config file. Doplarr writes the generated `config.toml` (wired to the variables above via `${...}`) when it can, so mounting a volume lets you keep and extend it.
+
+You can also reference environment variables from anywhere in a config file with `${VAR}`:
+
+```toml
+[backends.config.Seerr]
+url = "${OVERSEERR__URL}"
+api_key = "${OVERSEERR__API}"
+```
+
 ## Option mapping
 
 ### Global

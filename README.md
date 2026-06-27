@@ -143,6 +143,60 @@ api_key = "your_seerr_admin_api_key"
 # allow_4k = true        # show a Standard/4K quality choice (only enable if 4K servers are configured in Seerr)
 ```
 
+### Environment variables
+
+Any value in the config can pull from an environment variable with `${VAR}`,
+handy for keeping secrets out of the file:
+
+```toml
+[backends.config.Seerr]
+url = "${SEERR_URL}"
+api_key = "${SEERR_API_KEY}"
+```
+
+A referenced variable that isn't set is a startup error. Substitution applies
+inside quoted strings and bare values, but `${...}` in a `#` comment is ignored.
+
+**If the config path doesn't exist on startup,** Doplarr either:
+
+- **Builds a config from environment variables and starts** — when it detects a
+  Discord token plus at least one backend (see migration below). The bot runs
+  normally; it does *not* require a config file on disk.
+- Otherwise **writes a starter template** to the path and exits, so you have
+  something to edit.
+
+### Migrating from the Clojure Doplarr
+
+The original Doplarr's environment variables are detected automatically, so an
+existing **env-only deployment keeps working with no config file and no mounted
+volume** — Doplarr builds the config from the environment on each start and runs.
+Just set the legacy variables:
+
+| Setting | Variable |
+|---|---|
+| Discord token | `DISCORD__TOKEN` |
+| Seerr / Overseerr | `OVERSEERR__URL`, `OVERSEERR__API`, `OVERSEERR__DEFAULT_ID` |
+| Sonarr | `SONARR__URL`, `SONARR__API` |
+| Radarr | `RADARR__URL`, `RADARR__API` |
+| Log level | `LOG_LEVEL` |
+
+```yaml
+services:
+  doplarr:
+    image: ghcr.io/activexray/doplarr_rs:latest
+    container_name: doplarr
+    restart: unless-stopped
+    # No volume needed — config is built from these on startup
+    environment:
+      DISCORD__TOKEN: your_discord_bot_token
+      OVERSEERR__URL: http://localhost:5055
+      OVERSEERR__API: your_seerr_api_key
+```
+
+Doplarr also writes the generated `config.toml` (wired to these variables via
+`${...}`) when it can, so mounting a volume lets you keep and customize it. With
+no volume it's simply rebuilt from the environment each start.
+
 ## Running as a Service
 
 ```ini
