@@ -61,8 +61,12 @@ async fn main() -> anyhow::Result<()> {
     // Parse command line args to get path to config file
     let cli = args::Cli::parse();
 
-    // Read the config file
-    let config = config::Config::from_file(cli.config_file.unwrap())?;
+    // Load the config, generating one from environment variables or writing a
+    // starter template if it doesn't exist yet
+    let Some(config) = config::Config::load_or_init(cli.config_file.unwrap())? else {
+        // A starter template was written; nothing to run until it's filled in
+        return Ok(());
+    };
 
     // Setup logging with configured level
     let log_level = config.log_level.as_deref().unwrap_or("info");
