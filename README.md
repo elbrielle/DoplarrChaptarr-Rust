@@ -116,9 +116,7 @@ quality_profile = "WEB-1080p"
 rootfolder = "/tv"
 season_folders = true
 series_type = "standard"              # standard, daily, anime — omit to auto-detect from genres
-allow_specials = false                # offer Season 0 when requesting seasons of existing series
-# Restrict which monitor options users can pick (omit to allow all)
-allowed_monitor_types = ["firstSeason", "lastSeason", "latestSeason", "pilot", "recent"]
+allow_specials = false                # offer Season 0 in the season picker
 
 [[backends]]
 media = "anime"

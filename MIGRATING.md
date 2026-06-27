@@ -84,11 +84,10 @@ These have no equivalent in the Clojure version:
 
 | Key | Backend | Description |
 |---|---|---|
-| `monitor_type` | Radarr, Sonarr | Lock all requests to a specific monitor mode instead of prompting |
-| `allowed_monitor_types` | Sonarr | Restrict which monitor options users can pick (e.g. prevent "All") |
+| `monitor_type` | Radarr | Lock all requests to a specific monitor mode instead of prompting |
 | `minimum_availability` | Radarr | Pre-set minimum availability instead of prompting |
 | `series_type` | Sonarr | Force `standard`, `daily`, or `anime`; omit to auto-detect from genres |
-| `allow_specials` | Sonarr | Offer Season 0 when requesting seasons of an existing series |
+| `allow_specials` | Sonarr | Offer Season 0 in the season picker |
 | `allow_4k` | Seerr | Show a Standard/4K quality choice at request time |
 
 You can also point multiple `[[backends]]` entries at the same Radarr or Sonarr instance with different settings to create separate commands — e.g. `/request movie` and `/request movie_4k` from one Radarr instance.
