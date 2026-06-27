@@ -28,6 +28,11 @@ pub mod radarr;
 pub mod seerr;
 pub mod sonarr;
 
+/// Sentinel id for an "All Seasons" entry in a season multi-select. Real season
+/// numbers are >= 0, so -1 never collides. The Discord layer treats an option
+/// with this id as mutually exclusive with the rest of the multi-select.
+pub const ALL_SEASONS_ID: i32 = -1;
+
 /// Represents the different ways we can capture a unique id for a menu selection
 /// Some objects in the backends have unique integer ids, while some are just string sentinel values
 #[derive(Debug, Clone)]

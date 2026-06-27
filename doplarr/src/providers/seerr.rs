@@ -82,6 +82,7 @@ pub struct Seerr {
     fallback_user_id: Option<i32>,
     allow_4k: bool,
     media_filter: Option<MediaKind>,
+    allow_all_seasons: bool,
     user_cache: RwLock<Option<UserMapCache>>,
 }
 
@@ -101,6 +102,7 @@ impl Seerr {
             fallback_user_id,
             allow_4k,
             media_filter,
+            allow_all_seasons,
         } = backend
         else {
             bail!("Expected Seerr config");
@@ -125,6 +127,7 @@ impl Seerr {
             fallback_user_id,
             allow_4k: allow_4k.unwrap_or(false),
             media_filter,
+            allow_all_seasons: allow_all_seasons.unwrap_or(true),
             user_cache: RwLock::new(None),
         })
     }
@@ -392,7 +395,7 @@ impl MediaBackend for Seerr {
             "Fetching TV details",
         )?;
 
-        let mut options: Vec<DropdownOption> = details
+        let mut season_options: Vec<DropdownOption> = details
             .seasons
             .unwrap_or_default()
             .into_iter()
@@ -407,18 +410,32 @@ impl MediaBackend for Seerr {
             })
             .collect();
 
-        if options.is_empty() {
+        if season_options.is_empty() {
             bail!(UserFacingError("No requestable seasons found.".into()));
         }
 
-        if options.len() > MAX_DROPDOWN_OPTIONS {
+        let mut options: Vec<DropdownOption> = Vec::new();
+
+        // "All Seasons" leads the list; Seerr expands it server-side
+        if self.allow_all_seasons {
+            options.push(DropdownOption {
+                title: "All Seasons".into(),
+                description: Some("Includes future seasons".into()),
+                id: Some(SelectableId::Integer(ALL_SEASONS_ID)),
+            });
+        }
+
+        // Reserve a slot for the "All Seasons" entry against Discord's option cap
+        let capacity = MAX_DROPDOWN_OPTIONS - options.len();
+        if season_options.len() > capacity {
             warn!(
-                showing = MAX_DROPDOWN_OPTIONS,
-                total = options.len(),
+                showing = capacity,
+                total = season_options.len(),
                 "Truncating season list to fit Discord dropdown limit"
             );
-            options.truncate(MAX_DROPDOWN_OPTIONS);
+            season_options.truncate(capacity);
         }
+        options.extend(season_options);
 
         let season_step = RequestDetails {
             title: "Season".into(),
@@ -477,17 +494,25 @@ impl MediaBackend for Seerr {
                 .iter()
                 .find(|d| d.metadata.as_deref() == Some("seerr:season"))
                 .map(|d| {
-                    let mut nums: Vec<f64> = d
+                    let selected: Vec<i32> = d
                         .selected_indices
                         .iter()
                         .filter_map(|&i| d.options.get(i))
                         .filter_map(|o| match &o.id {
-                            Some(SelectableId::Integer(n)) => Some(*n as f64),
+                            Some(SelectableId::Integer(n)) => Some(*n),
                             _ => None,
                         })
                         .collect();
-                    nums.sort_by(|a, b| a.partial_cmp(b).unwrap());
-                    RequestPostRequestSeasons::ArrayVecf64(nums)
+
+                    // "All Seasons" - let Seerr expand it (and apply its own
+                    // future-season handling) via the "all" sentinel.
+                    if selected.contains(&ALL_SEASONS_ID) {
+                        RequestPostRequestSeasons::String("all".into())
+                    } else {
+                        let mut nums: Vec<f64> = selected.into_iter().map(|n| n as f64).collect();
+                        nums.sort_by(|a, b| a.partial_cmp(b).unwrap());
+                        RequestPostRequestSeasons::ArrayVecf64(nums)
+                    }
                 })
         } else {
             None
@@ -543,6 +568,9 @@ impl MediaBackend for Seerr {
                         _ => None,
                     })
                     .collect();
+                if nums.contains(&ALL_SEASONS_ID) {
+                    return " (All Seasons)".to_string();
+                }
                 nums.sort();
                 match nums.as_slice() {
                     [] => String::new(),

@@ -1,5 +1,6 @@
 use crate::providers::{
-    DropdownOption, FieldType, MediaBackend, MediaDisplayInfo, RequestDetails, SuccessMessage,
+    ALL_SEASONS_ID, DropdownOption, FieldType, MediaBackend, MediaDisplayInfo, RequestDetails,
+    SelectableId, SuccessMessage,
 };
 use anyhow::Context;
 use std::{sync::Arc, time::Duration};
@@ -598,15 +599,37 @@ pub async fn run_interaction(
             };
 
             if additional_details[detail_idx].field_type == FieldType::MultiSelect {
-                let indices: Vec<usize> = next
+                let detail = &mut additional_details[detail_idx];
+                let mut indices: Vec<usize> = next
                     .data
                     .values
                     .iter()
                     .filter_map(|v| v.parse().ok())
-                    .filter(|&i| i < additional_details[detail_idx].options.len())
+                    .filter(|&i| i < detail.options.len())
                     .collect();
+
+                // An "All Seasons"-style option is mutually exclusive with the
+                // rest. Discord can't enforce that natively, so we reconcile on
+                // re-render: selecting it clears the others; selecting another
+                // while it's active drops it.
+                let exclusive = detail.options.iter().position(
+                    |o| matches!(o.id, Some(SelectableId::Integer(n)) if n == ALL_SEASONS_ID),
+                );
+                if let Some(excl) = exclusive
+                    && indices.contains(&excl)
+                    && indices.len() > 1
+                {
+                    if detail.selected_indices.contains(&excl) {
+                        // It was already on and the user added a specific option
+                        indices.retain(|&i| i != excl);
+                    } else {
+                        // The user just turned it on
+                        indices = vec![excl];
+                    }
+                }
+
                 debug!(detail = %title, count = indices.len(), "User updated multi-select");
-                additional_details[detail_idx].selected_indices = indices;
+                detail.selected_indices = indices;
             } else {
                 let Some(option_idx) = next
                     .data

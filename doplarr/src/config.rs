@@ -45,6 +45,9 @@ pub enum BackendConfig {
         season_folders: Option<bool>,
         /// Offer Season 0 (specials) in the season picker (default: false)
         allow_specials: Option<bool>,
+        /// Offer an "All Seasons" option that monitors all current and future
+        /// seasons (default: true)
+        allow_all_seasons: Option<bool>,
     },
     Seerr {
         url: String,
@@ -58,6 +61,8 @@ pub enum BackendConfig {
         /// Restrict search results to a single media kind.
         /// When absent, both movies and TV shows are returned.
         media_filter: Option<MediaKind>,
+        /// Offer an "All Seasons" option in the season picker (default: true)
+        allow_all_seasons: Option<bool>,
     },
 }
 
@@ -145,6 +150,7 @@ mod tests {
                     fallback_user_id: Some(1),
                     allow_4k: None,
                     media_filter: None,
+                    allow_all_seasons: None,
                 },
             }],
             log_level: None,
