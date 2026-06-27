@@ -111,6 +111,11 @@ api_key = "your_sonarr_api_key"
 # Offer Season 0 (specials) in the season picker (default: false)
 # allow_specials = true
 
+# Offer an "All Seasons" option that monitors all current AND future seasons
+# (sets Sonarr's monitorNewItems). Default: true. Set to false to make users
+# pick individual seasons only.
+# allow_all_seasons = false
+
 # Series type: standard, daily, anime
 # Never shown to users. If unset, anime is auto-detected from the
 # series' genres and everything else is treated as standard
@@ -160,6 +165,10 @@ api_key = "your_sonarr_api_key"
 # # Optional: present a "Standard / 4K" quality choice to users (default: false).
 # # Only enable if your Seerr instance has 4K servers configured.
 # # allow_4k = true
+#
+# # Optional: offer an "All Seasons" option in the TV season picker (default: true).
+# # Sends Seerr's "all" sentinel; future-season behavior follows your Sonarr setup.
+# # allow_all_seasons = false
 #
 # # Optional: restrict search results to a single media kind ("movie" or "tv").
 # # When absent, both movies and TV shows are returned.

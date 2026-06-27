@@ -88,6 +88,7 @@ These have no equivalent in the Clojure version:
 | `minimum_availability` | Radarr | Pre-set minimum availability instead of prompting |
 | `series_type` | Sonarr | Force `standard`, `daily`, or `anime`; omit to auto-detect from genres |
 | `allow_specials` | Sonarr | Offer Season 0 in the season picker |
+| `allow_all_seasons` | Sonarr, Seerr | Offer an "All Seasons" option (all current + future seasons); default true |
 | `allow_4k` | Seerr | Show a Standard/4K quality choice at request time |
 
 You can also point multiple `[[backends]]` entries at the same Radarr or Sonarr instance with different settings to create separate commands — e.g. `/request movie` and `/request movie_4k` from one Radarr instance.

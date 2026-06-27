@@ -117,6 +117,7 @@ rootfolder = "/tv"
 season_folders = true
 series_type = "standard"              # standard, daily, anime — omit to auto-detect from genres
 allow_specials = false                # offer Season 0 in the season picker
+allow_all_seasons = true              # offer "All Seasons" (all current + future); default true
 
 [[backends]]
 media = "anime"
