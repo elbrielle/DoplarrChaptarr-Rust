@@ -96,10 +96,20 @@ pub struct SuccessMessage {
 
 impl RequestDetails {
     /// Returns the currently selected option (for single-select fields).
+    ///
+    /// A single-option, non-multi field is an admin-configured default (e.g. a
+    /// preset `rootfolder`): it is hidden from the user and rendered as static
+    /// text rather than a dropdown, so it never receives an explicit selection.
+    /// We treat its sole option as selected, matching the UI which already
+    /// considers such fields resolved.
     pub fn selected_option(&self) -> Option<&DropdownOption> {
-        self.selected_indices
-            .first()
-            .and_then(|&i| self.options.get(i))
+        if let Some(&i) = self.selected_indices.first() {
+            return self.options.get(i);
+        }
+        if self.field_type != FieldType::MultiSelect && self.options.len() == 1 {
+            return self.options.first();
+        }
+        None
     }
 
     /// Returns all currently selected options (for multi-select fields).
@@ -107,6 +117,52 @@ impl RequestDetails {
         self.selected_indices
             .iter()
             .filter_map(|&i| self.options.get(i))
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn detail(field_type: FieldType, n_options: usize, selected: Vec<usize>) -> RequestDetails {
+        RequestDetails {
+            title: "Test".into(),
+            options: (0..n_options)
+                .map(|i| DropdownOption {
+                    title: format!("opt{i}"),
+                    description: None,
+                    id: Some(SelectableId::Integer(i as i32)),
+                })
+                .collect(),
+            selected_indices: selected,
+            metadata: None,
+            field_type,
+            always_show: false,
+        }
+    }
+
+    #[test]
+    fn single_option_dropdown_auto_selects() {
+        // Admin-configured default: one option, hidden from the user, never
+        // explicitly selected. Must still resolve to that option.
+        let d = detail(FieldType::Dropdown, 1, vec![]);
+        assert_eq!(d.selected_option().map(|o| o.title.as_str()), Some("opt0"));
+    }
+
+    #[test]
+    fn multi_option_dropdown_requires_explicit_selection() {
+        let d = detail(FieldType::Dropdown, 3, vec![]);
+        assert!(d.selected_option().is_none());
+
+        let d = detail(FieldType::Dropdown, 3, vec![2]);
+        assert_eq!(d.selected_option().map(|o| o.title.as_str()), Some("opt2"));
+    }
+
+    #[test]
+    fn single_option_multiselect_does_not_auto_select() {
+        // For multi-select, "nothing selected" is a meaningful, distinct state.
+        let d = detail(FieldType::MultiSelect, 1, vec![]);
+        assert!(d.selected_option().is_none());
     }
 }
 
