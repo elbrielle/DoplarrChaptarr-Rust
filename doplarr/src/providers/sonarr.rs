@@ -855,3 +855,105 @@ impl MediaBackend for Sonarr {
         }
     }
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn detail(
+        metadata: &str,
+        title: &str,
+        id: SelectableId,
+        field_type: FieldType,
+        selected: bool,
+    ) -> RequestDetails {
+        RequestDetails {
+            title: metadata.to_string(),
+            options: vec![DropdownOption {
+                title: title.to_string(),
+                description: None,
+                id: Some(id),
+            }],
+            selected_indices: if selected { vec![0] } else { vec![] },
+            metadata: Some(metadata.to_string()),
+            field_type,
+            always_show: false,
+        }
+    }
+
+    /// New-series flow: every field present and explicitly selected.
+    fn full_details() -> Vec<RequestDetails> {
+        use FieldType::Dropdown;
+        vec![
+            detail(
+                field_keys::ROOT_FOLDER,
+                "/tv",
+                SelectableId::Integer(1),
+                Dropdown,
+                true,
+            ),
+            detail(
+                field_keys::QUALITY_PROFILE,
+                "HD",
+                SelectableId::Integer(3),
+                Dropdown,
+                true,
+            ),
+            detail(
+                field_keys::MONITOR,
+                "All",
+                SelectableId::String("all".into()),
+                Dropdown,
+                true,
+            ),
+            detail(
+                field_keys::SERIES_TYPE,
+                "Standard",
+                SelectableId::String("standard".into()),
+                Dropdown,
+                true,
+            ),
+            detail(
+                field_keys::SEASON_FOLDER,
+                "Yes",
+                SelectableId::Boolean(true),
+                Dropdown,
+                true,
+            ),
+        ]
+    }
+
+    #[test]
+    fn try_from_all_selected() {
+        let selected = SelectedDetails::try_from(full_details()).unwrap();
+        assert_eq!(selected.rootfolder_path.as_deref(), Some("/tv"));
+        assert_eq!(selected.quality_profile_id, Some(3));
+        assert_eq!(selected.monitor, Some(MonitorTypes::All));
+        assert_eq!(selected.series_type, Some(SeriesTypes::Standard));
+        assert_eq!(selected.season_folder, Some(true));
+    }
+
+    #[test]
+    fn try_from_preset_fields_are_auto_selected() {
+        // Admin presets root folder and quality profile, collapsing each to a
+        // single hidden option the user never selects. Must still resolve.
+        let mut details = full_details();
+        details[0].selected_indices = vec![]; // rootfolder preset
+        details[1].selected_indices = vec![]; // quality profile preset
+        let selected = SelectedDetails::try_from(details).unwrap();
+        assert_eq!(selected.rootfolder_path.as_deref(), Some("/tv"));
+        assert_eq!(selected.quality_profile_id, Some(3));
+    }
+
+    #[test]
+    fn try_from_unselected_multi_option_field_errors() {
+        let mut details = full_details();
+        details[2].options.push(DropdownOption {
+            title: "Future".into(),
+            description: None,
+            id: Some(SelectableId::String("future".into())),
+        });
+        details[2].selected_indices = vec![];
+        assert!(SelectedDetails::try_from(details).is_err());
+    }
+}

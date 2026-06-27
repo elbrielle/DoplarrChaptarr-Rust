@@ -545,3 +545,86 @@ impl MediaBackend for Radarr {
         }
     }
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    /// Build a single-select detail with one option, optionally pre-selected.
+    fn detail(metadata: &str, title: &str, id: SelectableId, selected: bool) -> RequestDetails {
+        RequestDetails {
+            title: metadata.to_string(),
+            options: vec![DropdownOption {
+                title: title.to_string(),
+                description: None,
+                id: Some(id),
+            }],
+            selected_indices: if selected { vec![0] } else { vec![] },
+            metadata: Some(metadata.to_string()),
+            field_type: FieldType::Dropdown,
+            always_show: false,
+        }
+    }
+
+    /// A full set of details with every field explicitly selected by the user.
+    fn full_details() -> Vec<RequestDetails> {
+        vec![
+            detail(
+                field_keys::ROOT_FOLDER,
+                "/movies",
+                SelectableId::Integer(1),
+                true,
+            ),
+            detail(
+                field_keys::QUALITY_PROFILE,
+                "HD",
+                SelectableId::Integer(7),
+                true,
+            ),
+            detail(
+                field_keys::MONITOR,
+                "Movie Only",
+                SelectableId::String("movieOnly".into()),
+                true,
+            ),
+            detail(
+                field_keys::AVAILABILITY,
+                "Released",
+                SelectableId::String("released".into()),
+                true,
+            ),
+        ]
+    }
+
+    #[test]
+    fn try_from_all_selected() {
+        let selected = SelectedDetails::try_from(full_details()).unwrap();
+        assert_eq!(selected.rootfolder_path, "/movies");
+        assert_eq!(selected.quality_profile_id, 7);
+        assert_eq!(selected.monitor, MonitorTypes::MovieOnly);
+        assert_eq!(selected.minimum_availability, MovieStatusType::Released);
+    }
+
+    #[test]
+    fn try_from_preset_rootfolder_is_auto_selected() {
+        // Admin preset collapses root folder to a single, hidden option that the
+        // user never explicitly selects. The request must still succeed.
+        let mut details = full_details();
+        details[0].selected_indices = vec![];
+        let selected = SelectedDetails::try_from(details).unwrap();
+        assert_eq!(selected.rootfolder_path, "/movies");
+    }
+
+    #[test]
+    fn try_from_unselected_multi_option_field_errors() {
+        let mut details = full_details();
+        // A genuine user-facing field with more than one option, left unselected.
+        details[1].options.push(DropdownOption {
+            title: "4K".into(),
+            description: None,
+            id: Some(SelectableId::Integer(8)),
+        });
+        details[1].selected_indices = vec![];
+        assert!(SelectedDetails::try_from(details).is_err());
+    }
+}

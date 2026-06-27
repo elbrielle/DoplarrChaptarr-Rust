@@ -120,6 +120,50 @@ impl RequestDetails {
     }
 }
 
+// Trait that all media types must implement
+pub trait MediaItem: Send + Sync + Debug {
+    fn to_dropdown(&self) -> DropdownOption;
+
+    fn as_any(&self) -> &dyn Any;
+
+    fn into_any(self: Box<Self>) -> Box<dyn Any>;
+}
+
+#[async_trait]
+pub trait MediaBackend: Send + Sync {
+    /// Given a search term, return a vector of things that can be converted into Discord's `SelectMenuOption`
+    async fn search(&self, term: &str) -> Result<Vec<Box<dyn MediaItem>>>;
+
+    /// Convert search results into dropdown options for display.
+    /// Backends can override this to customize labels based on their own context
+    /// (e.g. suppressing the media-kind tag when results are already filtered).
+    fn to_dropdown_options(&self, results: &[Box<dyn MediaItem>]) -> Vec<DropdownOption> {
+        results.iter().map(|x| x.to_dropdown()).collect()
+    }
+
+    /// Given a search results payload, determine if we should stop the interaction flow early
+    /// Not all providers will be able to do this with the payload alone, but this needs to not require a backend request
+    fn early_stop(&self, media: &dyn MediaItem) -> bool;
+
+    /// Return the media display info
+    fn display_info(&self, media: &dyn MediaItem) -> MediaDisplayInfo;
+
+    /// Return the additional details we want to collect in order to complete a request
+    async fn additional_details(&self, media: &dyn MediaItem) -> Result<Vec<RequestDetails>>;
+
+    /// Perform the request with the backend, using the information gathered
+    /// from the media search result and the additional details
+    async fn request(
+        &self,
+        details: Vec<RequestDetails>,
+        media: Box<dyn MediaItem>,
+        requester_discord_id: u64,
+    ) -> Result<()>;
+
+    /// Build the success message including details about what was requested
+    fn success_message(&self, details: &[RequestDetails], media: &dyn MediaItem) -> SuccessMessage;
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -164,48 +208,4 @@ mod tests {
         let d = detail(FieldType::MultiSelect, 1, vec![]);
         assert!(d.selected_option().is_none());
     }
-}
-
-// Trait that all media types must implement
-pub trait MediaItem: Send + Sync + Debug {
-    fn to_dropdown(&self) -> DropdownOption;
-
-    fn as_any(&self) -> &dyn Any;
-
-    fn into_any(self: Box<Self>) -> Box<dyn Any>;
-}
-
-#[async_trait]
-pub trait MediaBackend: Send + Sync {
-    /// Given a search term, return a vector of things that can be converted into Discord's `SelectMenuOption`
-    async fn search(&self, term: &str) -> Result<Vec<Box<dyn MediaItem>>>;
-
-    /// Convert search results into dropdown options for display.
-    /// Backends can override this to customize labels based on their own context
-    /// (e.g. suppressing the media-kind tag when results are already filtered).
-    fn to_dropdown_options(&self, results: &[Box<dyn MediaItem>]) -> Vec<DropdownOption> {
-        results.iter().map(|x| x.to_dropdown()).collect()
-    }
-
-    /// Given a search results payload, determine if we should stop the interaction flow early
-    /// Not all providers will be able to do this with the payload alone, but this needs to not require a backend request
-    fn early_stop(&self, media: &dyn MediaItem) -> bool;
-
-    /// Return the media display info
-    fn display_info(&self, media: &dyn MediaItem) -> MediaDisplayInfo;
-
-    /// Return the additional details we want to collect in order to complete a request
-    async fn additional_details(&self, media: &dyn MediaItem) -> Result<Vec<RequestDetails>>;
-
-    /// Perform the request with the backend, using the information gathered
-    /// from the media search result and the additional details
-    async fn request(
-        &self,
-        details: Vec<RequestDetails>,
-        media: Box<dyn MediaItem>,
-        requester_discord_id: u64,
-    ) -> Result<()>;
-
-    /// Build the success message including details about what was requested
-    fn success_message(&self, details: &[RequestDetails], media: &dyn MediaItem) -> SuccessMessage;
 }
