@@ -236,6 +236,12 @@ impl Sonarr {
             return None;
         };
 
+        // A series only has a real monitoring state once it exists in Sonarr.
+        // For a fresh lookup result (no id) Sonarr reports every season as
+        // monitored by default, which is not a true "already monitored" state -
+        // so only trust the flag for an existing series.
+        let series_exists = media.id.is_some();
+
         let mut seasons: Vec<&SeasonResource> = seasons
             .iter()
             .filter(|s| self.allow_specials || s.season_number.unwrap_or(0) != 0)
@@ -277,7 +283,7 @@ impl Sonarr {
             if n == 0 {
                 tags.push("Specials");
             }
-            if s.monitored.unwrap_or(false) {
+            if series_exists && s.monitored.unwrap_or(false) {
                 tags.push("Already monitored");
             }
             let description = (!tags.is_empty()).then(|| tags.join(" · "));
@@ -1019,5 +1025,77 @@ mod tests {
         assert_eq!(format_seasons(&[]), "");
         assert_eq!(format_seasons(&[3]), "Season 3");
         assert_eq!(format_seasons(&[3, 1, 2]), "Seasons 1, 2, 3");
+    }
+
+    /// A Sonarr backend with no live connection, for picker tests.
+    fn test_sonarr(allow_specials: bool, allow_all_seasons: bool) -> Sonarr {
+        Sonarr {
+            config: Configuration::new(),
+            details: Details {
+                rootfolders: vec![],
+                quality_profiles: vec![],
+                series_type: None,
+                season_folder: None,
+            },
+            allow_specials,
+            allow_all_seasons,
+        }
+    }
+
+    /// A SeriesResource with the given Sonarr id and monitored-flagged seasons.
+    fn series_with_seasons(id: Option<i32>, seasons: &[(i32, bool)]) -> SeriesResource {
+        SeriesResource {
+            id,
+            seasons: Some(Some(
+                seasons
+                    .iter()
+                    .map(|(n, monitored)| SeasonResource {
+                        season_number: Some(*n),
+                        monitored: Some(*monitored),
+                        ..Default::default()
+                    })
+                    .collect(),
+            )),
+            ..Default::default()
+        }
+    }
+
+    fn season_descriptions(picker: &RequestDetails) -> Vec<Option<String>> {
+        picker
+            .options
+            .iter()
+            .map(|o| o.description.clone())
+            .collect()
+    }
+
+    #[test]
+    fn picker_new_series_never_marks_seasons_already_monitored() {
+        // A fresh lookup result (id = None) reports seasons as monitored by
+        // default; the picker must not surface that as "Already monitored".
+        let sonarr = test_sonarr(false, false);
+        let media = series_with_seasons(None, &[(1, true), (2, true)]);
+        let picker = sonarr.build_season_picker(&media).expect("picker");
+
+        assert!(
+            season_descriptions(&picker)
+                .iter()
+                .flatten()
+                .all(|d| !d.contains("Already monitored")),
+            "new series should have no already-monitored tags: {:?}",
+            season_descriptions(&picker)
+        );
+    }
+
+    #[test]
+    fn picker_existing_series_marks_monitored_seasons() {
+        // For a series already in Sonarr (id = Some), the monitored flag is real.
+        let sonarr = test_sonarr(false, false);
+        let media = series_with_seasons(Some(42), &[(1, true), (2, false)]);
+        let picker = sonarr.build_season_picker(&media).expect("picker");
+
+        let descs = season_descriptions(&picker);
+        // allow_all_seasons is false, so options are seasons 1 then 2 in order.
+        assert_eq!(descs[0].as_deref(), Some("Already monitored"));
+        assert_eq!(descs[1], None);
     }
 }
