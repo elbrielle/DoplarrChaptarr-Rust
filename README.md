@@ -24,7 +24,10 @@ Each backend you configure creates a `/request <media>` slash command — e.g. `
 
 Go to the [Discord Developer Portal](https://discord.com/developers/applications), create a new application, then open the **Bot** tab and create a bot. Copy the token — you'll need it in your config.
 
-Under **OAuth2 → URL Generator**, tick the `bot` and `applications.commands` scopes. (To post request confirmations in the channel for everyone to see, also tick the `Send Messages` permission.) Open the generated URL to invite the bot to your server.
+Under **OAuth2 → URL Generator**, tick the `bot` and `applications.commands` scopes. Open the generated URL to invite the bot to your server.
+
+> [!NOTE]
+> To post request confirmations in the channel for everyone to see, also tick the `Send Messages` permission. Without it, requests still work — the public announcement is just skipped.
 
 ### 2. Get your backend API keys
 
@@ -79,7 +82,7 @@ That's all most setups need. For the **full list of options** — plus Seerr, 4K
 anime, and pointing several commands at one instance — see the annotated
 **[config.example.toml](config.example.toml)**.
 
-> **Good to know**
+> [!TIP]
 > - **No config yet?** Start the bot without one and it writes a starter
 >   `config.toml` for you to edit.
 > - **Keep secrets out of the file** by referencing environment variables:
@@ -89,11 +92,12 @@ anime, and pointing several commands at one instance — see the annotated
 
 ### Using Seerr
 
-If you request through Seerr/Overseerr/Jellyseerr, each user must link their
-Discord account: in Seerr, enable the Discord notification agent (Settings →
-Notifications → Discord), then each user enters their Discord User ID on their
-profile. Unlinked users are rejected unless you set `fallback_user_id` in the
-config.
+> [!IMPORTANT]
+> If you request through Seerr/Overseerr/Jellyseerr, each user must link their
+> Discord account, or their requests are rejected. In Seerr, enable the Discord
+> notification agent (Settings → Notifications → Discord), then each user enters
+> their Discord User ID on their profile. To accept requests from unlinked users
+> instead, set `fallback_user_id` in the config.
 
 ## Running as a Service
 
