@@ -5,7 +5,7 @@ use crate::providers::{
 use anyhow::Context;
 use std::{sync::Arc, time::Duration};
 use tokio::{sync::mpsc::Receiver, time::timeout};
-use tracing::{debug, error, info, trace};
+use tracing::{debug, info, trace, warn};
 use twilight_http::Client as HttpClient;
 use twilight_model::{
     application::{
@@ -712,23 +712,36 @@ pub async fn run_interaction(
     .await
     .context("Failed to send success response")?;
 
-    // Send public message to channel if configured
-    // Plain content only: it's the one thing OS notification previews render
+    // Send public message to channel if configured.
+    // Plain content only: it's the one thing OS notification previews render.
+    //
+    // A failure here must NOT fail the interaction. The request already
+    // succeeded and the user has already seen the success message above; the
+    // public announcement is best-effort. The common cause is the bot lacking
+    // "View Channel"/"Send Messages" permission in this channel (403 Missing
+    // Access), which we'd otherwise mis-surface to the user as a "Backend
+    // authentication error" overwriting their success message.
     if public_followup {
         let content = format!(
             "{} requested by <@{}>",
             escape_markdown(&success_msg.summary),
             user_id
         );
-        let result = discord_http
+        if let Err(e) = discord_http
             .create_message(channel_id)
             .content(&content)
-            .await;
-
-        if let Err(ref e) = result {
-            error!("Discord channel message error: {:?}", e);
+            .await
+        {
+            warn!(
+                uuid = %uuid,
+                channel_id = %channel_id,
+                error = ?e,
+                "Could not post the public request confirmation, but the request \
+                 itself succeeded. Ensure the bot has the \"View Channel\" and \
+                 \"Send Messages\" permissions in this channel, or set \
+                 public_followup = false to disable channel announcements."
+            );
         }
-        result.context("Failed to send channel message")?;
     }
 
     info!(uuid = %uuid, "Interaction flow completed successfully");
