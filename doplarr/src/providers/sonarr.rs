@@ -1029,8 +1029,21 @@ mod tests {
 
     /// A Sonarr backend with no live connection, for picker tests.
     fn test_sonarr(allow_specials: bool, allow_all_seasons: bool) -> Sonarr {
+        // Skip system CA loading so the test works in sandboxed environments (e.g. Nix).
+        let client = reqwest::ClientBuilder::new()
+            .danger_accept_invalid_certs(true)
+            .build()
+            .unwrap();
         Sonarr {
-            config: Configuration::new(),
+            config: Configuration {
+                base_path: "http://localhost:8989".to_owned(),
+                user_agent: None,
+                client,
+                basic_auth: None,
+                oauth_access_token: None,
+                bearer_access_token: None,
+                api_key: None,
+            },
             details: Details {
                 rootfolders: vec![],
                 quality_profiles: vec![],
