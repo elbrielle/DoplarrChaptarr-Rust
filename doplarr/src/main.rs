@@ -230,7 +230,13 @@ async fn main() -> anyhow::Result<()> {
                             warn!(data = ?command_data, "Interaction body didn't match what we expected",);
                             continue;
                         };
-                        info!(kind = media_kind, query = query, "Got search request");
+                        info!(
+                            kind = media_kind,
+                            query = query,
+                            user_id = ?interaction.author_id(),
+                            guild_id = ?interaction.guild_id,
+                            "Got search request"
+                        );
 
                         // Create the channel that we'll push data through
                         let (tx, rx) = mpsc::channel(1);
@@ -247,6 +253,7 @@ async fn main() -> anyhow::Result<()> {
                             uuid,
                             rx,
                             query,
+                            media: media_kind.clone(),
                             interaction_id: interaction.id,
                             application_id,
                             token: interaction.token.clone(),
@@ -297,9 +304,9 @@ async fn main() -> anyhow::Result<()> {
                                     // system failure - log it calmly. Everything else is
                                     // a real error worth an admin's attention.
                                     if e.downcast_ref::<UserFacingError>().is_some() {
-                                        info!(reason = %e, "Interaction ended with a user-facing message");
+                                        info!(uuid = %uuid, reason = %e, "Interaction ended with a user-facing message");
                                     } else {
-                                        error!(error = ?e, "Failed to run coroutine to completion");
+                                        error!(uuid = %uuid, error = ?e, "Failed to run coroutine to completion");
                                     }
 
                                     // Show sanitized error to Discord user (no sensitive info)
@@ -312,7 +319,7 @@ async fn main() -> anyhow::Result<()> {
                                     )
                                     .await
                                     {
-                                        warn!(error = %update_err, "Failed to send error message to user");
+                                        warn!(uuid = %uuid, error = %update_err, "Failed to send error message to user");
                                     }
                                 }
 

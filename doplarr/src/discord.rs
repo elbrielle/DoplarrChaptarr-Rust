@@ -412,6 +412,9 @@ pub struct InteractionStart {
     pub uuid: Uuid,
     pub rx: Receiver<InteractionContinue>,
     pub query: String,
+    /// The backend's media command (e.g. "movie", "series") this request targets.
+    /// Carried for log correlation when multiple backends are configured.
+    pub media: String,
     pub interaction_id: Id<InteractionMarker>,
     pub application_id: Id<ApplicationMarker>,
     pub token: String,
@@ -428,6 +431,16 @@ pub struct InteractionContinue {
 }
 
 /// The coroutine that runs the request interaction to completion
+///
+/// Wrapped in a span so every log emitted during the flow - including those
+/// from the backend providers - is tagged with the interaction's uuid, the
+/// requesting user, and the targeted media command. This is what makes a
+/// reporter's log readable when several requests overlap.
+#[tracing::instrument(
+    name = "interaction",
+    skip_all,
+    fields(uuid = %start.uuid, user_id = %start.user_id, media = %start.media),
+)]
 pub async fn run_interaction(
     start: InteractionStart,
     discord_http: Arc<HttpClient>,
@@ -439,6 +452,7 @@ pub async fn run_interaction(
         uuid,
         mut rx,
         query,
+        media: _,
         interaction_id,
         application_id,
         token,
@@ -446,7 +460,7 @@ pub async fn run_interaction(
         channel_id,
     } = start;
 
-    info!(uuid = %uuid, query = %query, "Starting interaction flow");
+    info!(query = %query, "Starting interaction flow");
 
     // Send the "thinking" ack so we can take some time to actually perform the request
     // This is done over the HTTP client connection
@@ -733,7 +747,6 @@ pub async fn run_interaction(
             .await
         {
             warn!(
-                uuid = %uuid,
                 channel_id = %channel_id,
                 error = ?e,
                 "Could not post the public request confirmation, but the request \
@@ -744,6 +757,6 @@ pub async fn run_interaction(
         }
     }
 
-    info!(uuid = %uuid, "Interaction flow completed successfully");
+    info!("Interaction flow completed successfully");
     Ok(())
 }
