@@ -104,8 +104,9 @@ discord_token = "your_discord_bot_token"
 
 /// Expand `${VAR}` references against the process environment. Expansion
 /// happens everywhere except inside `#` comments (so documenting the syntax in a
-/// comment is inert); it does apply inside quoted strings. An unset variable or
-/// an unterminated `${` is a hard error. Single-line strings only.
+/// comment is inert); it does apply inside quoted strings. An unset variable,
+/// a variable set to the empty string, or an unterminated `${` is a hard error.
+/// Single-line strings only.
 fn expand_env_vars(input: &str) -> anyhow::Result<String> {
     let mut out = String::with_capacity(input.len());
     let mut chars = input.chars().peekable();
@@ -141,6 +142,11 @@ fn expand_env_vars(input: &str) -> anyhow::Result<String> {
             let val = std::env::var(var).map_err(|_| {
                 anyhow::anyhow!("Config references environment variable `{var}`, which is not set")
             })?;
+            if val.is_empty() {
+                anyhow::bail!(
+                    "Config references environment variable `{var}`, which is set but empty"
+                );
+            }
             out.push_str(&val);
             continue;
         }
@@ -280,7 +286,9 @@ impl Config {
             return Self::from_file(path).map(Some);
         }
 
-        if let Some(generated) = generate_from_env(|k| std::env::var_os(k).is_some()) {
+        if let Some(generated) = generate_from_env(|k| {
+            std::env::var_os(k).filter(|v| !v.is_empty()).is_some()
+        }) {
             println!(
                 "No config file at {}; generating one from detected Doplarr environment variables.",
                 path.display()
@@ -401,6 +409,21 @@ mod tests {
     fn expand_env_vars_errors_on_unset_and_unterminated() {
         assert!(expand_env_vars("${DEFINITELY_NOT_SET_DOPLARR_VAR_XYZ}").is_err());
         assert!(expand_env_vars("oops ${UNTERMINATED").is_err());
+    }
+
+    #[test]
+    fn expand_env_vars_errors_on_empty_string_var() {
+        // Set a variable to the empty string, then verify it's rejected.
+        let var = "DOPLARR_TEST_EMPTY_STRING";
+        unsafe { std::env::set_var(var, "") };
+        let result = expand_env_vars(&format!("${{{var}}}"));
+        unsafe { std::env::remove_var(var) };
+        assert!(result.is_err());
+        let err = result.unwrap_err().to_string();
+        assert!(
+            err.contains(var) && err.contains("empty"),
+            "error should mention var and empty: {err}"
+        );
     }
 
     #[test]
