@@ -286,9 +286,9 @@ impl Config {
             return Self::from_file(path).map(Some);
         }
 
-        if let Some(generated) = generate_from_env(|k| {
-            std::env::var_os(k).filter(|v| !v.is_empty()).is_some()
-        }) {
+        if let Some(generated) =
+            generate_from_env(|k| std::env::var_os(k).filter(|v| !v.is_empty()).is_some())
+        {
             println!(
                 "No config file at {}; generating one from detected Doplarr environment variables.",
                 path.display()
