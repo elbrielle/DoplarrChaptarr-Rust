@@ -836,6 +836,7 @@ impl MediaBackend for Sonarr {
                 summary: "Request submitted".into(),
                 description: "Will be downloaded when available.".into(),
                 thumbnail_url: None,
+                embed_data: None,
             };
         };
 
@@ -865,10 +866,29 @@ impl MediaBackend for Sonarr {
             }
         };
 
+        let overview = media.overview.clone().flatten().unwrap_or_default();
+        let genres: Vec<String> = media.genres.clone().flatten().unwrap_or_default();
+        let external_url = media
+            .tmdb_id
+            .map(|id| format!("https://www.themoviedb.org/tv/{id}"));
+
+        let embed_data = external_url.map(|external_url| EmbedData {
+            title: format!("{title} ({year}){detail_text}"),
+            media_type: "TV Series",
+            overview: truncate_for_embed(&overview),
+            poster_url: media.remote_poster.clone().flatten().unwrap_or_default(),
+            genres,
+            runtime_minutes: media.runtime.map(|r| r as u32),
+            studio_or_network: media.network.clone().flatten(),
+            director: None,
+            external_url,
+        });
+
         SuccessMessage {
             summary: format!("{title} ({year}){detail_text}"),
             description: "Will be downloaded when available.".to_string(),
             thumbnail_url: media.remote_poster.clone().flatten(),
+            embed_data,
         }
     }
 }

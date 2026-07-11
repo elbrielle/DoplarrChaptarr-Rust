@@ -1,6 +1,6 @@
 use crate::providers::{
-    ALL_SEASONS_ID, DropdownOption, FieldType, MediaBackend, MediaDisplayInfo, RequestDetails,
-    SelectableId, SuccessMessage,
+    ALL_SEASONS_ID, DropdownOption, EmbedData, FieldType, MediaBackend, MediaDisplayInfo,
+    RequestDetails, SelectableId, SuccessMessage,
 };
 use anyhow::Context;
 use std::{sync::Arc, time::Duration};
@@ -15,6 +15,7 @@ use twilight_model::{
     channel::message::{
         Component, MessageFlags,
         component::{ActionRow, ButtonStyle, SelectMenuType, UnfurledMediaItem},
+        embed::{Embed, EmbedField, EmbedThumbnail},
     },
     http::interaction::{InteractionResponse, InteractionResponseType},
     id::{
@@ -406,6 +407,89 @@ fn build_completion_component(message: &SuccessMessage) -> Component {
     container.build().into()
 }
 
+fn build_success_embed(data: &EmbedData) -> Embed {
+    let mut fields = Vec::with_capacity(5);
+
+    // Runtime — adapt label for TV
+    let runtime_label = if data.media_type == "TV Series" {
+        "Ep. Runtime"
+    } else {
+        "Runtime"
+    };
+
+    fields.push(EmbedField {
+        name: "Type".into(),
+        value: data.media_type.into(),
+        inline: true,
+    });
+
+    if let Some(runtime) = data.runtime_minutes {
+        fields.push(EmbedField {
+            name: runtime_label.into(),
+            value: format!("{runtime} min"),
+            inline: true,
+        });
+    }
+
+    if !data.genres.is_empty() {
+        fields.push(EmbedField {
+            name: "Genres".into(),
+            value: data.genres.join(", "),
+            inline: true,
+        });
+    }
+
+    if let Some(ref studio) = data.studio_or_network {
+        let label = if data.media_type == "TV Series" {
+            "Network"
+        } else {
+            "Studio"
+        };
+        fields.push(EmbedField {
+            name: label.into(),
+            value: studio.clone(),
+            inline: true,
+        });
+    }
+
+    if let Some(ref director) = data.director {
+        fields.push(EmbedField {
+            name: "Director".into(),
+            value: director.clone(),
+            inline: true,
+        });
+    }
+
+    let thumbnail = EmbedThumbnail {
+        url: data.poster_url.clone(),
+        height: None,
+        width: None,
+        proxy_url: None,
+    };
+
+    let description = if data.overview.is_empty() {
+        None
+    } else {
+        Some(data.overview.clone())
+    };
+
+    Embed {
+        author: None,
+        color: Some(ACCENT_COLOR),
+        description,
+        fields,
+        footer: None,
+        image: None,
+        kind: "rich".into(),
+        provider: None,
+        thumbnail: Some(thumbnail),
+        timestamp: None,
+        title: Some(data.title.clone()),
+        url: Some(data.external_url.clone()),
+        video: None,
+    }
+}
+
 #[derive(Debug)]
 /// Data needed to start an interaction flow
 pub struct InteractionStart {
@@ -727,7 +811,8 @@ pub async fn run_interaction(
     .context("Failed to send success response")?;
 
     // Send public message to channel if configured.
-    // Plain content only: it's the one thing OS notification previews render.
+    // The `content` field drives OS notification previews; embeds are only
+    // visible inside the Discord app.
     //
     // A failure here must NOT fail the interaction. The request already
     // succeeded and the user has already seen the success message above; the
@@ -741,11 +826,18 @@ pub async fn run_interaction(
             escape_markdown(&success_msg.summary),
             user_id
         );
-        if let Err(e) = discord_http
-            .create_message(channel_id)
-            .content(&content)
-            .await
-        {
+
+        let embed_vec: Option<Vec<Embed>> = success_msg
+            .embed_data
+            .as_ref()
+            .map(|ed| vec![build_success_embed(ed)]);
+
+        let mut msg = discord_http.create_message(channel_id).content(&content);
+        if let Some(ref embeds) = embed_vec {
+            msg = msg.embeds(embeds);
+        }
+
+        if let Err(e) = msg.await {
             warn!(
                 channel_id = %channel_id,
                 error = ?e,

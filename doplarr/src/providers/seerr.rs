@@ -10,6 +10,7 @@ use seerr_api::{
         Error as SeerrApiError,
         auth_api::auth_me_get,
         configuration::{ApiKey, Configuration},
+        movies_api::movie_movie_id_get,
         request_api::request_post,
         search_api::search_get,
         tv_api::tv_tv_id_get,
@@ -17,6 +18,7 @@ use seerr_api::{
     },
     models::{_request_post_request::MediaType, RequestPostRequest, RequestPostRequestSeasons},
 };
+use serde::{Deserialize, Serialize};
 use std::{
     collections::HashMap,
     time::{Duration, Instant},
@@ -39,6 +41,16 @@ fn log_api_error<T: std::fmt::Debug>(err: &SeerrApiError<T>, context: &str) {
 }
 
 /// Log the API error details, then convert to anyhow for propagation.
+const ENRICHED_KEY: &str = "seerr:enriched";
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+struct SeerrEnriched {
+    genres: Vec<String>,
+    runtime_minutes: Option<u32>,
+    studio_or_network: Option<String>,
+    director: Option<String>,
+}
+
 fn require<T, E>(result: std::result::Result<T, SeerrApiError<E>>, context: &str) -> Result<T>
 where
     E: std::fmt::Debug + Send + Sync + 'static,
@@ -385,71 +397,151 @@ impl MediaBackend for Seerr {
             always_show: true,
         });
 
-        if result.media_type != "tv" {
-            return Ok(quality_step.into_iter().collect());
-        }
+        let mut opts: Vec<RequestDetails> = quality_step.into_iter().collect();
 
-        let tv_id = result.id;
-        let details = require(
-            tv_tv_id_get(&self.config, tv_id, None).await,
-            "Fetching TV details",
-        )?;
+        let enriched = if result.media_type == "tv" {
+            let tv_id = result.id;
+            let details = require(
+                tv_tv_id_get(&self.config, tv_id, None).await,
+                "Fetching TV details",
+            )?;
 
-        let mut season_options: Vec<DropdownOption> = details
-            .seasons
-            .unwrap_or_default()
-            .into_iter()
-            .filter(|s| s.season_number.is_some_and(|n| n > 0.0))
-            .map(|s| {
-                let n = s.season_number.unwrap() as i32;
-                DropdownOption {
-                    title: n.to_string(),
-                    description: None,
-                    id: Some(SelectableId::Integer(n)),
-                }
-            })
-            .collect();
+            let genres: Vec<String> = details
+                .genres
+                .unwrap_or_default()
+                .into_iter()
+                .filter_map(|g| g.name)
+                .collect();
+            let runtime_minutes = details
+                .episode_run_time
+                .as_ref()
+                .and_then(|rts| rts.first().copied())
+                .map(|r| r as u32);
+            let studio_or_network = details
+                .networks
+                .unwrap_or_default()
+                .into_iter()
+                .next()
+                .and_then(|n| n.name);
+            let director = details
+                .credits
+                .as_ref()
+                .and_then(|c| c.crew.as_ref())
+                .and_then(|crew| {
+                    crew.iter().find_map(|c| {
+                        if c.job.as_deref() == Some("Director") {
+                            c.name.clone()
+                        } else {
+                            None
+                        }
+                    })
+                });
 
-        if season_options.is_empty() {
-            bail!(UserFacingError("No requestable seasons found.".into()));
-        }
+            let mut season_options: Vec<DropdownOption> = details
+                .seasons
+                .unwrap_or_default()
+                .into_iter()
+                .filter(|s| s.season_number.is_some_and(|n| n > 0.0))
+                .map(|s| {
+                    let n = s.season_number.unwrap() as i32;
+                    DropdownOption {
+                        title: n.to_string(),
+                        description: None,
+                        id: Some(SelectableId::Integer(n)),
+                    }
+                })
+                .collect();
 
-        let mut options: Vec<DropdownOption> = Vec::new();
+            if season_options.is_empty() {
+                bail!(UserFacingError("No requestable seasons found.".into()));
+            }
 
-        // "All Seasons" leads the list; Seerr expands it server-side
-        if self.allow_all_seasons {
-            options.push(DropdownOption {
-                title: "All Seasons".into(),
-                description: Some("Includes future seasons".into()),
-                id: Some(SelectableId::Integer(ALL_SEASONS_ID)),
+            let mut options: Vec<DropdownOption> = Vec::new();
+            if self.allow_all_seasons {
+                options.push(DropdownOption {
+                    title: "All Seasons".into(),
+                    description: Some("Includes future seasons".into()),
+                    id: Some(SelectableId::Integer(ALL_SEASONS_ID)),
+                });
+            }
+            let capacity = MAX_DROPDOWN_OPTIONS - options.len();
+            if season_options.len() > capacity {
+                warn!(
+                    showing = capacity,
+                    total = season_options.len(),
+                    "Truncating season list to fit Discord dropdown limit"
+                );
+                season_options.truncate(capacity);
+            }
+            options.extend(season_options);
+
+            opts.push(RequestDetails {
+                title: "Season".into(),
+                options,
+                selected_indices: vec![],
+                metadata: Some("seerr:season".into()),
+                field_type: FieldType::MultiSelect,
+                always_show: true,
             });
-        }
 
-        // Reserve a slot for the "All Seasons" entry against Discord's option cap
-        let capacity = MAX_DROPDOWN_OPTIONS - options.len();
-        if season_options.len() > capacity {
-            warn!(
-                showing = capacity,
-                total = season_options.len(),
-                "Truncating season list to fit Discord dropdown limit"
-            );
-            season_options.truncate(capacity);
-        }
-        options.extend(season_options);
+            SeerrEnriched {
+                genres,
+                runtime_minutes,
+                studio_or_network,
+                director,
+            }
+        } else {
+            let movie_id = result.id;
+            let details = require(
+                movie_movie_id_get(&self.config, movie_id, None).await,
+                "Fetching movie details",
+            )?;
 
-        let season_step = RequestDetails {
-            title: "Season".into(),
-            options,
-            selected_indices: vec![],
-            metadata: Some("seerr:season".into()),
-            field_type: FieldType::MultiSelect,
-            always_show: true,
+            let director = details
+                .credits
+                .as_ref()
+                .and_then(|c| c.crew.as_ref())
+                .and_then(|crew| {
+                    crew.iter().find_map(|c| {
+                        if c.job.as_deref() == Some("Director") {
+                            c.name.clone()
+                        } else {
+                            None
+                        }
+                    })
+                });
+
+            SeerrEnriched {
+                genres: details
+                    .genres
+                    .unwrap_or_default()
+                    .into_iter()
+                    .filter_map(|g| g.name)
+                    .collect(),
+                runtime_minutes: details.runtime.map(|r| r as u32),
+                studio_or_network: details
+                    .production_companies
+                    .unwrap_or_default()
+                    .into_iter()
+                    .next()
+                    .and_then(|p| p.name),
+                director,
+            }
         };
 
-        Ok(quality_step
-            .into_iter()
-            .chain(std::iter::once(season_step))
-            .collect())
+        let enriched_json = serde_json::to_string(&enriched).unwrap_or_default();
+        opts.push(RequestDetails {
+            title: String::new(),
+            options: vec![],
+            selected_indices: vec![],
+            metadata: Some(ENRICHED_KEY.into()),
+            field_type: FieldType::Dropdown,
+            always_show: false,
+        });
+        // Hack: stash the JSON in the title field so RequestDetails isn't shown to the user
+        opts.last_mut().unwrap().title = enriched_json;
+
+        Ok(opts)
     }
 
     async fn request(
@@ -535,6 +627,7 @@ impl MediaBackend for Seerr {
                 summary: "Request submitted".into(),
                 description: "Your request has been submitted.".into(),
                 thumbnail_url: None,
+                embed_data: None,
             };
         };
 
@@ -597,10 +690,40 @@ impl MediaBackend for Seerr {
             .as_ref()
             .map(|p| format!("https://image.tmdb.org/t/p/w500{p}"));
 
+        let external_url = {
+            let slug = match result.media_type.as_str() {
+                "tv" => "tv",
+                _ => "movie",
+            };
+            format!("https://www.themoviedb.org/{slug}/{}", result.id as i64)
+        };
+
+        let enriched = details
+            .iter()
+            .find(|d| d.metadata.as_deref() == Some(ENRICHED_KEY))
+            .and_then(|d| serde_json::from_str::<SeerrEnriched>(&d.title).ok());
+
+        let embed_data = EmbedData {
+            title: base.clone(),
+            media_type: if result.media_type == "tv" {
+                "TV Series"
+            } else {
+                "Movie"
+            },
+            overview: truncate_for_embed(&result.overview.clone().unwrap_or_default()),
+            poster_url: thumbnail_url.clone().unwrap_or_default(),
+            genres: enriched.as_ref().map_or(Vec::new(), |e| e.genres.clone()),
+            runtime_minutes: enriched.as_ref().and_then(|e| e.runtime_minutes),
+            studio_or_network: enriched.as_ref().and_then(|e| e.studio_or_network.clone()),
+            director: enriched.as_ref().and_then(|e| e.director.clone()),
+            external_url,
+        };
+
         SuccessMessage {
             summary,
             description: "Your request has been submitted to Seerr.".into(),
             thumbnail_url,
+            embed_data: Some(embed_data),
         }
     }
 }

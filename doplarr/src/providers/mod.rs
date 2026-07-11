@@ -97,6 +97,37 @@ pub struct SuccessMessage {
     pub summary: String,
     pub description: String,
     pub thumbnail_url: Option<String>,
+    /// Rich metadata for the public embed. When `Some`, a rich embed is posted
+    /// alongside the plain-text `summary` in the public follow-up message.
+    pub embed_data: Option<EmbedData>,
+}
+
+/// Rich metadata for the public follow-up embed
+#[derive(Debug, Clone)]
+pub struct EmbedData {
+    pub title: String,
+    pub media_type: &'static str,
+    pub overview: String,
+    pub poster_url: String,
+    pub genres: Vec<String>,
+    pub runtime_minutes: Option<u32>,
+    pub studio_or_network: Option<String>,
+    pub director: Option<String>,
+    pub external_url: String,
+}
+
+/// Truncate a string to Discord's embed description limit (4096 chars).
+pub fn truncate_for_embed(s: &str) -> String {
+    let limit = 4096;
+    if s.len() <= limit {
+        s.to_string()
+    } else {
+        let mut end = limit;
+        while !s.is_char_boundary(end) {
+            end -= 1;
+        }
+        s[..end].to_string()
+    }
 }
 
 impl RequestDetails {
