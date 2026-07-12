@@ -10,18 +10,37 @@ permissions:
     packages: write
 
 jobs:
+    check:
+        name: Validate release source
+        runs-on: ubuntu-latest
+        permissions:
+            contents: read
+        steps:
+            - name: Checkout repository
+              uses: actions/checkout@v6
+
+            - name: Verify tag matches Cargo version
+              shell: bash
+              run: |
+                  version=$(awk '/^\[workspace.package\]/{found=1; next} /^\[/{found=0} found && /^version = /{gsub(/[" ]/, "", $3); print $3; exit}' Cargo.toml)
+                  test "v${version}" = "${GITHUB_REF_NAME}"
+
+            - name: Install Nix
+              uses: DeterminateSystems/determinate-nix-action@v3
+
+            - name: Run release checks
+              run: nix flake check --print-build-logs --keep-going
+
     build-linux:
         name: Build Linux artifacts
+        needs: check
         runs-on: ubuntu-latest
         steps:
             - name: Checkout repository
-              uses: actions/checkout@v4
+              uses: actions/checkout@v6
 
             - name: Install Nix
-              uses: DeterminateSystems/nix-installer-action@v13
-
-            - name: Setup Nix cache
-              uses: DeterminateSystems/magic-nix-cache-action@v7
+              uses: DeterminateSystems/determinate-nix-action@v3
 
             - name: Build x86_64 musl binary
               run: |
@@ -37,10 +56,10 @@ jobs:
               run: |
                   nix build .#dockerImage --print-build-logs
                   docker load < result
-                  docker tag ghcr.io/activexray/doplarr_rs:latest ghcr.io/activexray/doplarr_rs:${{ github.ref_name }}-amd64
+                  docker tag ghcr.io/elbrielle/doplarrchaptarr:latest ghcr.io/elbrielle/doplarrchaptarr:${{ github.ref_name }}-amd64
                   nix build .#dockerImageAarch64 --print-build-logs
                   docker load < result
-                  docker tag ghcr.io/activexray/doplarr_rs:latest ghcr.io/activexray/doplarr_rs:${{ github.ref_name }}-arm64
+                  docker tag ghcr.io/elbrielle/doplarrchaptarr:latest ghcr.io/elbrielle/doplarrchaptarr:${{ github.ref_name }}-arm64
 
             - name: Log in to GitHub Container Registry
               uses: docker/login-action@v3
@@ -51,42 +70,49 @@ jobs:
 
             - name: Push images and create multi-arch manifest
               run: |
-                  docker push ghcr.io/activexray/doplarr_rs:${{ github.ref_name }}-amd64
-                  docker push ghcr.io/activexray/doplarr_rs:${{ github.ref_name }}-arm64
+                  docker push ghcr.io/elbrielle/doplarrchaptarr:${{ github.ref_name }}-amd64
+                  docker push ghcr.io/elbrielle/doplarrchaptarr:${{ github.ref_name }}-arm64
                   docker buildx imagetools create \
-                    -t ghcr.io/activexray/doplarr_rs:${{ github.ref_name }} \
-                    -t ghcr.io/activexray/doplarr_rs:latest \
-                    ghcr.io/activexray/doplarr_rs:${{ github.ref_name }}-amd64 \
-                    ghcr.io/activexray/doplarr_rs:${{ github.ref_name }}-arm64
+                    -t ghcr.io/elbrielle/doplarrchaptarr:${{ github.ref_name }} \
+                    ghcr.io/elbrielle/doplarrchaptarr:${{ github.ref_name }}-amd64 \
+                    ghcr.io/elbrielle/doplarrchaptarr:${{ github.ref_name }}-arm64
+
+            - name: Promote stable image to latest
+              if: ${{ !contains(github.ref_name, '-') }}
+              run: |
+                  docker buildx imagetools create \
+                    -t ghcr.io/elbrielle/doplarrchaptarr:latest \
+                    ghcr.io/elbrielle/doplarrchaptarr:${{ github.ref_name }}
 
             - name: Upload Linux binaries to release
               uses: softprops/action-gh-release@v2
               with:
+                  prerelease: ${{ contains(github.ref_name, '-') }}
                   files: |
                       doplarr-x86_64-unknown-linux-musl
                       doplarr-aarch64-unknown-linux-musl
 
     build-windows:
         name: Build Windows artifact
+        needs: check
         runs-on: windows-latest
         steps:
             - name: Checkout repository
-              uses: actions/checkout@v4
+              uses: actions/checkout@v6
 
             - name: Install Rust
-              uses: dtolnay/rust-toolchain@master
-              with:
-                  toolchain: "1.96"
-
-            - name: Cache Rust artifacts
-              uses: Swatinem/rust-cache@v2
+              shell: pwsh
+              run: |
+                  rustup toolchain install 1.96.1 --profile minimal
+                  rustup default 1.96.1
 
             - name: Build Windows binary
               run: |
-                  cargo build --release -p doplarr
+                  cargo build --release --locked -p doplarr
                   cp target/release/doplarr.exe doplarr-x86_64-pc-windows-msvc.exe
 
             - name: Upload Windows binary to release
               uses: softprops/action-gh-release@v2
               with:
+                  prerelease: ${{ contains(github.ref_name, '-') }}
                   files: doplarr-x86_64-pc-windows-msvc.exe

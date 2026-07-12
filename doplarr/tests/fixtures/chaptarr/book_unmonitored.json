@@ -1,0 +1,33 @@
+{
+  "id": 4102,
+  "authorId": 2101,
+  "title": "The Clockwork Orchard: A Novel",
+  "mediaType": "ebook",
+  "monitored": false,
+  "hasFiles": false,
+  "grabbed": false,
+  "foreignEditionId": "gr:edition-3002",
+  "releaseDate": "2024-05-21T00:00:00Z",
+  "images": [
+    {
+      "coverType": "cover",
+      "url": "/MediaCoverProxy/local/clockwork-orchard-4102.jpg"
+    }
+  ],
+  "statistics": {
+    "bookFileCount": 0,
+    "totalBookCount": 1
+  },
+  "ratings": {
+    "popularity": 80.0,
+    "votes": 120
+  },
+  "editions": [
+    {
+      "title": "The Clockwork Orchard: A Novel",
+      "foreignEditionId": "gr:edition-3002",
+      "isEbook": true,
+      "isbn13": "9780000000002"
+    }
+  ]
+}

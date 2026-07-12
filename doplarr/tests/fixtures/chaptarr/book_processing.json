@@ -1,0 +1,29 @@
+{
+  "id": 5101,
+  "authorId": 2101,
+  "title": "The Clockwork Orchard",
+  "mediaType": "audiobook",
+  "monitored": true,
+  "hasFiles": false,
+  "grabbed": true,
+  "foreignEditionId": "az:ZZ00000001",
+  "releaseDate": "2024-06-04T00:00:00Z",
+  "images": [
+    {
+      "coverType": "cover",
+      "url": "https://covers.example.test/clockwork-orchard-audio.jpg"
+    }
+  ],
+  "statistics": {
+    "bookFileCount": 0,
+    "totalBookCount": 1
+  },
+  "editions": [
+    {
+      "title": "The Clockwork Orchard",
+      "foreignEditionId": "az:ZZ00000001",
+      "isEbook": false,
+      "asin": "ZZ00000001"
+    }
+  ]
+}

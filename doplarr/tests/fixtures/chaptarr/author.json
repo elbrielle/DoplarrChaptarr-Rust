@@ -1,0 +1,14 @@
+{
+  "id": 2101,
+  "authorName": "Mara Vale",
+  "foreignAuthorId": "hc:author-2001",
+  "monitored": true,
+  "ebookMonitorFuture": true,
+  "audiobookMonitorFuture": false,
+  "ebookQualityProfileId": 11,
+  "audiobookQualityProfileId": 12,
+  "ebookMetadataProfileId": 21,
+  "audiobookMetadataProfileId": 22,
+  "ebookRootFolderPath": "/library/ebooks",
+  "audiobookRootFolderPath": "/library/audiobooks"
+}

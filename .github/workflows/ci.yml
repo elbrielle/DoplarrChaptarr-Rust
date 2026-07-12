@@ -32,13 +32,10 @@ jobs:
             security-events: write # upload clippy findings as code scanning results
         steps:
             - name: Checkout repository
-              uses: actions/checkout@v4
+              uses: actions/checkout@v6
 
             - name: Install Nix
-              uses: DeterminateSystems/nix-installer-action@v13
-
-            - name: Setup Nix cache
-              uses: DeterminateSystems/magic-nix-cache-action@v7
+              uses: DeterminateSystems/determinate-nix-action@v3
 
             # Compiles clippy once and emits a SARIF report with repo-relative
             # paths. Built before the gate so the report uploads even when there
@@ -70,10 +67,7 @@ jobs:
               uses: actions/checkout@v6
 
             - name: Install Nix
-              uses: DeterminateSystems/nix-installer-action@main
-
-            - name: Setup Nix cache
-              uses: DeterminateSystems/magic-nix-cache-action@main
+              uses: DeterminateSystems/determinate-nix-action@v3
 
             - name: Build Docker image
               run: |
@@ -89,5 +83,5 @@ jobs:
 
             - name: Push Docker image
               run: |
-                  docker tag ghcr.io/activexray/doplarr_rs:latest ghcr.io/activexray/doplarr_rs:main
-                  docker push ghcr.io/activexray/doplarr_rs:main
+                  docker tag ghcr.io/elbrielle/doplarrchaptarr:latest ghcr.io/elbrielle/doplarrchaptarr:main
+                  docker push ghcr.io/elbrielle/doplarrchaptarr:main

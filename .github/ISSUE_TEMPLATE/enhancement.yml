@@ -5,9 +5,9 @@ body:
   - type: markdown
     attributes:
       value: |
-        Thanks for taking the time to fill out this feature request!
+        Thanks for taking the time to fill out this DoplarrChaptarr feature request!
 
-        Please note that we use GitHub issues exclusively for bug reports and feature requests. For support questions, please use our other support channels to get help.
+        GitHub issues are for bug reports and feature requests. For support questions, use GitHub Discussions.
   - type: textarea
     id: description
     attributes:
@@ -39,7 +39,7 @@ body:
     id: terms
     attributes:
       label: Code of Conduct
-      description: By submitting this issue, you agree to follow our [Code of Conduct](https://github.com/activexray/doplarr_rs/blob/main/CODE_OF_CONDUCT.md).
+      description: By submitting this issue, you agree to follow our [Code of Conduct](https://github.com/elbrielle/DoplarrChaptarr/blob/main/CODE_OF_CONDUCT.md).
       options:
-        - label: I agree to follow Doplarr's Code of Conduct.
+        - label: I agree to follow DoplarrChaptarr's Code of Conduct.
           required: true

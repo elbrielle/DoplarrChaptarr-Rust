@@ -1,0 +1,20 @@
+{
+  "start": 0,
+  "num_found": 2,
+  "docs": [
+    {
+      "title": "The Clockwork Orchard",
+      "author_name": [
+        "Mara Vale"
+      ],
+      "cover_i": 990000001
+    },
+    {
+      "title": "Clockwork Orchards: A Field Guide",
+      "author_name": [
+        "Rowan Pike"
+      ],
+      "cover_i": 990000002
+    }
+  ]
+}

@@ -1,0 +1,21 @@
+{
+  "id": 4199,
+  "authorId": 2101,
+  "title": "The Clockwork Orchard",
+  "mediaType": "ebook",
+  "monitored": false,
+  "hasFiles": false,
+  "grabbed": false,
+  "foreignEditionId": "default-4199",
+  "releaseDate": null,
+  "images": [],
+  "statistics": {
+    "bookFileCount": 0,
+    "totalBookCount": 0
+  },
+  "ratings": {
+    "popularity": 0,
+    "votes": 0
+  },
+  "editions": []
+}

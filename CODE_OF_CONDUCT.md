@@ -61,7 +61,7 @@ representative at an online or offline event.
 Instances of abusive, harassing, or otherwise unacceptable behavior may be
 reported privately to the project maintainers through GitHub — either by
 opening a private report via the repository's
-[**Security → Report a vulnerability**](https://github.com/activexray/doplarr_rs/security/advisories/new)
+[**Security → Report a vulnerability**](https://github.com/elbrielle/DoplarrChaptarr/security/advisories/new)
 form, or by contacting a maintainer directly. All complaints will be reviewed
 and investigated promptly and fairly.
 

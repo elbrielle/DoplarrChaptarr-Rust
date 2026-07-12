@@ -24,6 +24,7 @@ impl std::error::Error for UserFacingError {}
 mod api_logging;
 
 // Backend instances
+pub mod chaptarr;
 pub mod radarr;
 pub mod seerr;
 pub mod sonarr;

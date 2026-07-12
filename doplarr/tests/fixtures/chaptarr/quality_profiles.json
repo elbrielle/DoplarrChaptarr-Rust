@@ -1,0 +1,12 @@
+[
+  {
+    "id": 11,
+    "name": "Ebook Standard",
+    "profileType": "ebook"
+  },
+  {
+    "id": 12,
+    "name": "Audiobook Standard",
+    "profileType": "audiobook"
+  }
+]

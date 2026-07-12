@@ -1,0 +1,20 @@
+[
+  {
+    "id": 31,
+    "name": "Ebooks",
+    "path": "/library/ebooks",
+    "accessible": true
+  },
+  {
+    "id": 32,
+    "name": "Audiobooks",
+    "path": "/library/audiobooks",
+    "accessible": true
+  },
+  {
+    "id": 39,
+    "name": "Offline Archive",
+    "path": "/library/offline",
+    "accessible": false
+  }
+]

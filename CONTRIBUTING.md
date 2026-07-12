@@ -1,44 +1,17 @@
-# Contributing to Doplarr
+# Contributing to DoplarrChaptarr
 
 All help is welcome and greatly appreciated! If you would like to contribute to the project, the following instructions should get you started...
 
-## AI Assistance
-
-Using AI tools to help you contribute is fine. We just ask that you stay in the
-driver's seat: **AI-assisted development, yes; fully AI-driven contributions,
-no.** Use AI as a tool to help you write code, not as an agent that
-autonomously generates an entire contribution and submits it on your behalf.
-
-A few simple expectations:
-
-- **Understand your code.** You should be able to explain and answer questions
-  about anything you submit.
-- **Write the PR description in your own words.** A short, clear explanation of
-  *your* change is far more useful than a pasted AI summary.
-- **Test your change** before opening the PR (see [Contributing Code](#contributing-code)).
-- **Keep it focused.** A PR that claims to fix one thing but touches a lot of
-  unrelated code is hard to review — broad AI prompts tend to cause this.
-- **Disclose AI assistance** in the PR description, along with roughly how much
-  was used (e.g. docs only vs. code generation). Trivial tab-completion of
-  single keywords or short phrases doesn't need to be disclosed.
-
-Example disclosures:
-
-> **AI Disclosure:** This PR was written primarily by Claude Code.
-> **AI Disclosure:** I consulted ChatGPT to understand the codebase, but the solution was authored manually.
-> **AI Disclosure:** None.
-
-Disclosure isn't about discouraging AI use — it just helps reviewers know how
-much scrutiny a change needs, and it's a courtesy to the humans on the other
-end of the pull request.
-
 ## Development
+
+Contributions to DoplarrChaptarr are submitted under GPL-3.0-only. Existing
+upstream files keep their recorded copyright and compatible license notices.
 
 ### Tools Required
 
 - [Git](https://git-scm.com/downloads)
 - A Rust toolchain. The pinned channel and components live in
-  [`rust-toolchain.toml`](rust-toolchain.toml) (currently Rust 1.96, edition
+  [`rust-toolchain.toml`](rust-toolchain.toml) (currently Rust 1.96.1, edition
   2024) and `rustup` will install them automatically.
 - [Nix](https://nixos.org/download/) **(recommended)**. The flake provides a
   complete development shell with the correct toolchain and tools (including
@@ -51,8 +24,8 @@ end of the pull request.
 1. [Fork](https://help.github.com/articles/fork-a-repo/) the repository to your own GitHub account and [clone](https://help.github.com/articles/cloning-a-repository/) it to your local device:
 
    ```bash
-   git clone https://github.com/YOUR_USERNAME/doplarr_rs.git
-   cd doplarr_rs/
+   git clone https://github.com/elbrielle/DoplarrChaptarr.git
+   cd DoplarrChaptarr/
    ```
 
 2. Add the remote `upstream`:
@@ -131,11 +104,11 @@ and wiring up config and initialization.
   ```
 
 - Open pull requests against `main`.
-- If you have questions or need help, reach out via [Discussions](/../../discussions) or our [Discord server](https://discord.gg/890634173751119882).
+- If you have questions or need help, use [GitHub Discussions](/../../discussions).
 
 ### User-Facing Text
 
-Doplarr's user-facing surface is the Discord bot. When adding or changing text
+DoplarrChaptarr's user-facing surface is the Discord bot. When adding or changing text
 that users see:
 
 1. Be concise and clear, and use as few words as possible to make your point. Prefer minimal, low-noise messages.
@@ -150,4 +123,3 @@ This contribution guide and our Code of Conduct are adapted from
 turn inspired by the [Next.js](https://github.com/vercel/next.js),
 [Radarr](https://github.com/Radarr/Radarr), and
 [Ghostty](https://github.com/ghostty-org/ghostty) contribution guides.
-</content>

@@ -3,7 +3,8 @@ use clap::Parser;
 use config::{Backend, BackendConfig};
 use discord::InteractionContinue;
 use providers::{
-    MediaBackend, UserFacingError, radarr::Radarr, seerr::Seerr as SeerrBackend, sonarr::Sonarr,
+    MediaBackend, UserFacingError, chaptarr::Chaptarr, radarr::Radarr,
+    seerr::Seerr as SeerrBackend, sonarr::Sonarr,
 };
 use std::{
     collections::{HashMap, HashSet},
@@ -114,6 +115,9 @@ async fn main() -> anyhow::Result<()> {
             BackendConfig::Seerr { .. } => {
                 Arc::new(SeerrBackend::connect(config.clone(), backend_http.clone()).await?)
             }
+            BackendConfig::Chaptarr { .. } => {
+                Arc::new(Chaptarr::connect(config.clone(), backend_http.clone()).await?)
+            }
         };
         backends.insert(media.as_str(), backend);
     }
@@ -211,10 +215,17 @@ async fn main() -> anyhow::Result<()> {
                 }
             }
             Event::InteractionCreate(interaction) => {
-                trace!(data = ?interaction, "Got interaction event");
+                trace!(
+                    interaction_id = %interaction.id,
+                    "Got interaction event"
+                );
                 match &interaction.data {
                     Some(InteractionData::ApplicationCommand(command_data)) => {
-                        debug!(data = ?command_data, "Got application command");
+                        debug!(
+                            interaction_id = %interaction.id,
+                            command = %command_data.name,
+                            "Got application command"
+                        );
                         // New interaction
                         // We now dispatch on the "name" of the interaction which selects the media kind, called with the query string
                         let (media_kind, query) = if command_data.name
@@ -227,16 +238,14 @@ async fn main() -> anyhow::Result<()> {
                         {
                             (subcommand.name.clone(), value.clone())
                         } else {
-                            warn!(data = ?command_data, "Interaction body didn't match what we expected",);
+                            warn!(
+                                interaction_id = %interaction.id,
+                                command = %command_data.name,
+                                "Interaction body didn't match what we expected"
+                            );
                             continue;
                         };
-                        info!(
-                            kind = media_kind,
-                            query = query,
-                            user_id = ?interaction.author_id(),
-                            guild_id = ?interaction.guild_id,
-                            "Got search request"
-                        );
+                        info!(kind = media_kind, "Got search request");
 
                         // Create the channel that we'll push data through
                         let (tx, rx) = mpsc::channel(1);
@@ -330,7 +339,11 @@ async fn main() -> anyhow::Result<()> {
                         });
                     }
                     Some(InteractionData::MessageComponent(component_data)) => {
-                        debug!(data=?component_data, "Got message component");
+                        debug!(
+                            interaction_id = %interaction.id,
+                            custom_id = %component_data.custom_id,
+                            "Got message component"
+                        );
                         // This is a continuation of an interaction, send this update payload through the channel to the spawned coroutine
                         // Extract the UUID from the update message and push this new data into the associated channel to move that coroutine forward
                         if let Some((_, uuid)) = component_data.custom_id.split_once(':')

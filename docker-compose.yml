@@ -1,7 +1,23 @@
+# Unreleased beta reference. Build locally until this exact tag is published.
 services:
-    doplarr:
-        image: ghcr.io/activexray/doplarr_rs:latest
-        container_name: doplarr
+    doplarrchaptarr:
+        image: ghcr.io/elbrielle/doplarrchaptarr:v4.6.0-chaptarr.1
+        container_name: doplarrchaptarr
         restart: unless-stopped
+        init: true
+        read_only: true
+        cap_drop:
+            - ALL
+        security_opt:
+            - no-new-privileges:true
+        env_file:
+            - .env
         volumes:
-            - ./config.toml:/config.toml:ro
+            - type: bind
+              source: ./config.toml
+              target: /config.toml
+              read_only: true
+              bind:
+                  create_host_path: false
+        tmpfs:
+            - /tmp:size=16m,mode=1777

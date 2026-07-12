@@ -1,0 +1,90 @@
+[
+  {
+    "id": 0,
+    "title": "The Clockwork Orchard",
+    "titleSlug": "the-clockwork-orchard-mara-vale",
+    "foreignBookId": "hc:work-1001",
+    "releaseDate": "2024-05-14T00:00:00Z",
+    "overview": "A quiet story about rebuilding a mechanical orchard.",
+    "remoteCover": "/MediaCoverProxy/lookup/clockwork-orchard.jpg",
+    "images": [
+      {
+        "coverType": "cover",
+        "url": "/MediaCoverProxy/lookup/clockwork-orchard.jpg"
+      }
+    ],
+    "author": {
+      "id": 0,
+      "authorName": "Mara Vale",
+      "foreignAuthorId": "hc:author-2001"
+    },
+    "editions": [
+      {
+        "title": "The Clockwork Orchard",
+        "foreignEditionId": "hc:edition-3001",
+        "isEbook": true,
+        "isbn13": "9780000000002",
+        "images": [
+          {
+            "coverType": "cover",
+            "url": "https://covers.example.test/clockwork-orchard-ebook.jpg"
+          }
+        ]
+      },
+      {
+        "title": "The Clockwork Orchard",
+        "foreignEditionId": "az:ZZ00000001",
+        "isEbook": false,
+        "asin": "ZZ00000001",
+        "images": []
+      }
+    ],
+    "localEbookBooks": [
+      {
+        "id": "4101"
+      }
+    ],
+    "localAudiobookBooks": [
+      {
+        "id": 5101
+      }
+    ]
+  },
+  {
+    "id": "0",
+    "title": "The Glass Harbor",
+    "titleSlug": "the-glass-harbor-iona-reed",
+    "foreignBookId": "gr:work-1002",
+    "releaseDate": "2022-09-03T00:00:00Z",
+    "overview": "A cartographer returns to an island that should not exist.",
+    "images": [
+      {
+        "coverType": "cover",
+        "url": "https://images.example.test/glass-harbor.jpg"
+      }
+    ],
+    "author": {
+      "id": "0",
+      "authorName": "Iona Reed",
+      "foreignAuthorId": "gr:author-2002"
+    },
+    "editions": [],
+    "localEbookBooks": [],
+    "localAudiobookBooks": []
+  },
+  {
+    "id": 0,
+    "title": "The Clockwork Orchard: Summary and Analysis",
+    "foreignBookId": "gr:junk-9001",
+    "overview": "An unofficial study guide.",
+    "images": [],
+    "author": {
+      "id": 0,
+      "authorName": "Quick Notes Press",
+      "foreignAuthorId": "gr:author-9001"
+    },
+    "editions": [],
+    "localEbookBooks": [],
+    "localAudiobookBooks": []
+  }
+]

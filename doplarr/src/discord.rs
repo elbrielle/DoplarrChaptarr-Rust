@@ -517,13 +517,12 @@ pub struct InteractionContinue {
 /// The coroutine that runs the request interaction to completion
 ///
 /// Wrapped in a span so every log emitted during the flow - including those
-/// from the backend providers - is tagged with the interaction's uuid, the
-/// requesting user, and the targeted media command. This is what makes a
-/// reporter's log readable when several requests overlap.
+/// from the backend providers - is tagged with a random correlation UUID and
+/// the targeted media command without recording the requester's Discord ID.
 #[tracing::instrument(
     name = "interaction",
     skip_all,
-    fields(uuid = %start.uuid, user_id = %start.user_id, media = %start.media),
+    fields(uuid = %start.uuid, media = %start.media),
 )]
 pub async fn run_interaction(
     start: InteractionStart,
@@ -544,13 +543,13 @@ pub async fn run_interaction(
         channel_id,
     } = start;
 
-    info!(query = %query, "Starting interaction flow");
+    info!("Starting interaction flow");
 
     // Send the "thinking" ack so we can take some time to actually perform the request
     // This is done over the HTTP client connection
     send_thinking(&discord_http, application_id, interaction_id, &token).await?;
 
-    debug!(query = %query, "Performing search");
+    debug!(query_length = query.chars().count(), "Performing search");
     let mut results = backend.search(&query).await?;
     info!(count = results.len(), "Search completed");
 
@@ -594,7 +593,11 @@ pub async fn run_interaction(
             return Ok(());
         }
     };
-    trace!(data = ?next, "Got the next interaction");
+    trace!(
+        interaction_id = %next.interaction_id,
+        custom_id = %next.data.custom_id,
+        "Got the next interaction"
+    );
 
     // Use the value from this next payload to get the index into the search results to process
     let selection_idx: usize = next
@@ -660,7 +663,11 @@ pub async fn run_interaction(
                 return Ok(());
             }
         };
-        trace!(data = ?next, "Got interaction from additional details");
+        trace!(
+            interaction_id = %next.interaction_id,
+            custom_id = %next.data.custom_id,
+            "Got interaction from additional details"
+        );
 
         // Check if this was the final "Request" button click
         if next.data.custom_id.starts_with("request:") {
@@ -751,7 +758,12 @@ pub async fn run_interaction(
         };
 
         if let Some(reason) = stale {
-            debug!(data = ?next.data, reason = reason, "Ignoring component event");
+            debug!(
+                interaction_id = %next.interaction_id,
+                custom_id = %next.data.custom_id,
+                reason = reason,
+                "Ignoring component event"
+            );
             ack_component(
                 &discord_http,
                 application_id,

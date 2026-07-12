@@ -25,6 +25,13 @@ pub enum MediaKind {
     Tv,
 }
 
+#[derive(Deserialize, Serialize, Debug, PartialEq, Eq, Clone, Copy)]
+#[serde(rename_all = "lowercase")]
+pub enum ChaptarrFormat {
+    Ebook,
+    Audiobook,
+}
+
 #[derive(Deserialize, Serialize, Debug, PartialEq, Eq, Clone)]
 /// All of the backend-specific configuration, passed to the backend constructors
 pub enum BackendConfig {
@@ -64,11 +71,31 @@ pub enum BackendConfig {
         /// Offer an "All Seasons" option in the season picker (default: true)
         allow_all_seasons: Option<bool>,
     },
+    Chaptarr {
+        url: String,
+        api_key: String,
+        /// The library format exposed by this slash command.
+        format: ChaptarrFormat,
+        /// Optional exact Chaptarr ebook root-folder path.
+        ebook_rootfolder: Option<String>,
+        /// Optional exact Chaptarr audiobook root-folder path.
+        audiobook_rootfolder: Option<String>,
+        /// Optional exact Chaptarr ebook quality-profile name.
+        ebook_quality_profile: Option<String>,
+        /// Optional exact Chaptarr audiobook quality-profile name.
+        audiobook_quality_profile: Option<String>,
+        /// Optional exact Chaptarr ebook metadata-profile name.
+        ebook_metadata_profile: Option<String>,
+        /// Optional exact Chaptarr audiobook metadata-profile name.
+        audiobook_metadata_profile: Option<String>,
+        /// Enrich missing cover art through Open Library. Defaults to true.
+        openlibrary_covers: Option<bool>,
+    },
 }
 
 /// Starter config written when no config file exists and no migration
 /// environment variables are detected.
-const TEMPLATE: &str = r#"# Doplarr configuration
+const TEMPLATE: &str = r#"# DoplarrChaptarr configuration
 #
 # Any value can be pulled from an environment variable with ${VAR}, which is
 # handy for secrets, e.g.  api_key = "${SEERR_API_KEY}"
@@ -100,6 +127,38 @@ discord_token = "your_discord_bot_token"
 # [backends.config.Radarr]
 # url = "http://localhost:7878"
 # api_key = "${RADARR_API_KEY}"
+
+# --- Chaptarr ebook ---
+# [[backends]]
+# media = "book"
+#
+# [backends.config.Chaptarr]
+# url = "http://localhost:8789"
+# api_key = "${CHAPTARR_API_KEY}"
+# format = "ebook"
+# ebook_rootfolder = "/books"
+# audiobook_rootfolder = "/audiobooks"
+# ebook_quality_profile = "E-Book"
+# audiobook_quality_profile = "Audiobook"
+# ebook_metadata_profile = "Ebook Default"
+# audiobook_metadata_profile = "Audiobook Default"
+# openlibrary_covers = true
+
+# --- Chaptarr audiobook ---
+# [[backends]]
+# media = "audiobook"
+#
+# [backends.config.Chaptarr]
+# url = "http://localhost:8789"
+# api_key = "${CHAPTARR_API_KEY}"
+# format = "audiobook"
+# ebook_rootfolder = "/books"
+# audiobook_rootfolder = "/audiobooks"
+# ebook_quality_profile = "E-Book"
+# audiobook_quality_profile = "Audiobook"
+# ebook_metadata_profile = "Ebook Default"
+# audiobook_metadata_profile = "Audiobook Default"
+# openlibrary_covers = true
 "#;
 
 /// Expand `${VAR}` references against the process environment. Expansion
@@ -184,11 +243,15 @@ fn expand_env_vars(input: &str) -> anyhow::Result<String> {
     Ok(out)
 }
 
-/// Build a config from legacy Doplarr (Clojure) environment variables, using
-/// `is_set` to probe the environment. Returns `None` unless a Discord token and
-/// at least one backend are present. Values are emitted as `${VAR}` references
-/// so secrets never land on disk.
-fn generate_from_env(is_set: impl Fn(&str) -> bool) -> Option<String> {
+/// Build a config from legacy Doplarr (Clojure) environment variables. `is_set`
+/// determines which backends/defaults exist; `get_value` is used only for old
+/// settings whose value changes behavior. Returns `None` unless a Discord token
+/// and at least one backend are present. Values are emitted as `${VAR}`
+/// references so secrets never land on disk.
+fn generate_from_env(
+    is_set: impl Fn(&str) -> bool,
+    get_value: impl Fn(&str) -> Option<String>,
+) -> Option<String> {
     if !is_set("DISCORD__TOKEN") {
         return None;
     }
@@ -198,6 +261,7 @@ fn generate_from_env(is_set: impl Fn(&str) -> bool) -> Option<String> {
     let seerr = is_set("OVERSEERR__URL") && is_set("OVERSEERR__API");
     let sonarr = is_set("SONARR__URL") && is_set("SONARR__API");
     let radarr = is_set("RADARR__URL") && is_set("RADARR__API");
+    let chaptarr = is_set("CHAPTARR__URL") && is_set("CHAPTARR__API");
 
     if seerr {
         // The legacy Clojure bot exposed Overseerr as separate movie and series
@@ -243,17 +307,58 @@ fn generate_from_env(is_set: impl Fn(&str) -> bool) -> Option<String> {
         }
     }
 
+    // Chaptarr is complementary to the movie/TV backends, so it is generated
+    // even when Seerr is also present. Each format receives its own command and
+    // its own optional root/profile defaults, matching the Clojure fork.
+    if chaptarr {
+        let mut push_chaptarr = |media: &str, format: &str| {
+            backends.push_str(&format!(
+                "\n[[backends]]\nmedia = \"{media}\"\n\n[backends.config.Chaptarr]\n\
+                 url = \"${{CHAPTARR__URL}}\"\napi_key = \"${{CHAPTARR__API}}\"\n\
+                 format = \"{format}\"\n"
+            ));
+
+            for (field, var) in [
+                ("ebook_rootfolder", "CHAPTARR__EBOOK_ROOTFOLDER"),
+                ("audiobook_rootfolder", "CHAPTARR__AUDIOBOOK_ROOTFOLDER"),
+                ("ebook_quality_profile", "CHAPTARR__EBOOK_QUALITY_PROFILE"),
+                (
+                    "audiobook_quality_profile",
+                    "CHAPTARR__AUDIOBOOK_QUALITY_PROFILE",
+                ),
+                ("ebook_metadata_profile", "CHAPTARR__EBOOK_METADATA_PROFILE"),
+                (
+                    "audiobook_metadata_profile",
+                    "CHAPTARR__AUDIOBOOK_METADATA_PROFILE",
+                ),
+            ] {
+                if is_set(var) {
+                    backends.push_str(&format!("{field} = \"${{{var}}}\"\n"));
+                }
+            }
+        };
+
+        push_chaptarr("book", "ebook");
+        push_chaptarr("audiobook", "audiobook");
+    }
+
     if backends.is_empty() {
         return None;
     }
 
     let mut config = String::from(
-        "# Auto-generated by Doplarr from detected legacy environment variables.\n\
+        "# Auto-generated by DoplarrChaptarr from detected legacy environment variables.\n\
          # Values are read from the environment at runtime via ${VAR} substitution.\n\n\
          discord_token = \"${DISCORD__TOKEN}\"\n",
     );
     if is_set("LOG_LEVEL") {
         config.push_str("log_level = \"${LOG_LEVEL}\"\n");
+    }
+    if get_value("DISCORD__REQUESTED_MSG_STYLE")
+        .as_deref()
+        .is_some_and(|style| style.trim().eq_ignore_ascii_case(":none"))
+    {
+        config.push_str("public_followup = false\n");
     }
     config.push_str(&backends);
 
@@ -286,9 +391,10 @@ impl Config {
             return Self::from_file(path).map(Some);
         }
 
-        if let Some(generated) =
-            generate_from_env(|k| std::env::var_os(k).filter(|v| !v.is_empty()).is_some())
-        {
+        if let Some(generated) = generate_from_env(
+            |k| std::env::var_os(k).filter(|v| !v.is_empty()).is_some(),
+            |k| std::env::var(k).ok().filter(|v| !v.is_empty()),
+        ) {
             println!(
                 "No config file at {}; generating one from detected Doplarr environment variables.",
                 path.display()
@@ -305,7 +411,7 @@ impl Config {
             .with_context(|| format!("Failed to write starter config to {}", path.display()))?;
         println!(
             "No config file found. Wrote a starter config to {}.\n\
-             Edit it (or set the DISCORD__TOKEN / OVERSEERR__* / SONARR__* / RADARR__* \
+             Edit it (or set the DISCORD__TOKEN / OVERSEERR__* / SONARR__* / RADARR__* / CHAPTARR__* \
              environment variables) and restart.",
             path.display()
         );
@@ -394,6 +500,54 @@ mod tests {
     }
 
     #[test]
+    fn test_parse_chaptarr_config() {
+        let config: Config = toml::from_str(
+            r#"
+           discord_token = "abc123"
+
+           [[backends]]
+           media = "book"
+
+           [backends.config.Chaptarr]
+           url = "http://1.2.3.4:8789"
+           api_key = "abc123"
+           format = "ebook"
+           ebook_rootfolder = "/books"
+           audiobook_rootfolder = "/audiobooks"
+           ebook_quality_profile = "E-Book"
+           audiobook_quality_profile = "Audiobook"
+           ebook_metadata_profile = "Ebook Default"
+           audiobook_metadata_profile = "Audiobook Default"
+           openlibrary_covers = false
+        "#,
+        )
+        .unwrap();
+
+        let expected = Config {
+            discord_token: "abc123".to_string(),
+            backends: vec![Backend {
+                media: "book".to_string(),
+                config: BackendConfig::Chaptarr {
+                    url: "http://1.2.3.4:8789".to_string(),
+                    api_key: "abc123".to_string(),
+                    format: ChaptarrFormat::Ebook,
+                    ebook_rootfolder: Some("/books".to_string()),
+                    audiobook_rootfolder: Some("/audiobooks".to_string()),
+                    ebook_quality_profile: Some("E-Book".to_string()),
+                    audiobook_quality_profile: Some("Audiobook".to_string()),
+                    ebook_metadata_profile: Some("Ebook Default".to_string()),
+                    audiobook_metadata_profile: Some("Audiobook Default".to_string()),
+                    openlibrary_covers: Some(false),
+                },
+            }],
+            log_level: None,
+            public_followup: None,
+        };
+
+        assert_eq!(config, expected);
+    }
+
+    #[test]
     fn expand_env_vars_substitutes_and_passes_through() {
         // PATH is reliably set in any environment we run tests in.
         let path = std::env::var("PATH").unwrap();
@@ -440,11 +594,17 @@ mod tests {
     #[test]
     fn generate_from_env_needs_token_and_a_backend() {
         // No token at all.
-        assert!(generate_from_env(|_| false).is_none());
+        assert!(generate_from_env(|_| false, |_| None).is_none());
         // Token but no backend.
-        assert!(generate_from_env(|k| k == "DISCORD__TOKEN").is_none());
+        assert!(generate_from_env(|k| k == "DISCORD__TOKEN", |_| None).is_none());
         // Token + incomplete Seerr (url only).
-        assert!(generate_from_env(|k| matches!(k, "DISCORD__TOKEN" | "OVERSEERR__URL")).is_none());
+        assert!(
+            generate_from_env(
+                |k| matches!(k, "DISCORD__TOKEN" | "OVERSEERR__URL"),
+                |_| None
+            )
+            .is_none()
+        );
     }
 
     #[test]
@@ -455,7 +615,7 @@ mod tests {
             "OVERSEERR__API",
             "OVERSEERR__DEFAULT_ID",
         ];
-        let toml = generate_from_env(|k| set.contains(&k)).expect("should generate");
+        let toml = generate_from_env(|k| set.contains(&k), |_| None).expect("should generate");
 
         assert!(toml.contains(r#"discord_token = "${DISCORD__TOKEN}""#));
         assert!(toml.contains(r#"url = "${OVERSEERR__URL}""#));
@@ -482,20 +642,114 @@ mod tests {
     fn generate_from_env_overseerr_takes_precedence_over_arr() {
         // Everything set: Overseerr fronts the *arrs, so direct Sonarr/Radarr
         // backends are skipped to avoid duplicate command names.
-        let toml = generate_from_env(|_| true).expect("should generate");
+        let toml = generate_from_env(|_| true, |_| None).expect("should generate");
         assert!(toml.contains("[backends.config.Seerr]"));
         assert!(!toml.contains("[backends.config.Sonarr]"));
         assert!(!toml.contains("[backends.config.Radarr]"));
+        assert_eq!(toml.matches("[backends.config.Chaptarr]").count(), 2);
     }
 
     #[test]
     fn generate_from_env_uses_direct_arr_without_overseerr() {
         let set = ["DISCORD__TOKEN", "SONARR__URL", "SONARR__API"];
-        let toml = generate_from_env(|k| set.contains(&k)).expect("should generate");
+        let toml = generate_from_env(|k| set.contains(&k), |_| None).expect("should generate");
         assert!(toml.contains("[backends.config.Sonarr]"));
         assert!(toml.contains(r#"media = "series""#));
         assert!(!toml.contains("Seerr"));
         assert!(!toml.contains("Radarr"));
+    }
+
+    #[test]
+    fn generate_from_env_keeps_chaptarr_beside_direct_arr_backends() {
+        let set = [
+            "DISCORD__TOKEN",
+            "SONARR__URL",
+            "SONARR__API",
+            "RADARR__URL",
+            "RADARR__API",
+            "CHAPTARR__URL",
+            "CHAPTARR__API",
+        ];
+        let toml = generate_from_env(|k| set.contains(&k), |_| None).expect("should generate");
+
+        assert!(toml.contains("[backends.config.Sonarr]"));
+        assert!(toml.contains("[backends.config.Radarr]"));
+        assert_eq!(toml.matches("[backends.config.Chaptarr]").count(), 2);
+
+        let expanded = expand_env_vars_for_test(&toml);
+        let parsed =
+            Config::from_toml_str(&expanded, "test").expect("combined generated config must parse");
+        assert_eq!(parsed.backends.len(), 4);
+    }
+
+    #[test]
+    fn generate_from_env_adds_both_chaptarr_formats_and_preserves_defaults() {
+        let set = [
+            "DISCORD__TOKEN",
+            "CHAPTARR__URL",
+            "CHAPTARR__API",
+            "CHAPTARR__EBOOK_ROOTFOLDER",
+            "CHAPTARR__AUDIOBOOK_ROOTFOLDER",
+            "CHAPTARR__EBOOK_QUALITY_PROFILE",
+            "CHAPTARR__AUDIOBOOK_QUALITY_PROFILE",
+            "CHAPTARR__EBOOK_METADATA_PROFILE",
+            "CHAPTARR__AUDIOBOOK_METADATA_PROFILE",
+        ];
+        let toml = generate_from_env(|k| set.contains(&k), |_| None).expect("should generate");
+
+        assert_eq!(toml.matches("[backends.config.Chaptarr]").count(), 2);
+        assert!(toml.contains("media = \"book\""));
+        assert!(toml.contains("format = \"ebook\""));
+        assert!(toml.contains("media = \"audiobook\""));
+        assert!(toml.contains("format = \"audiobook\""));
+        for var in &set[3..] {
+            assert_eq!(
+                toml.matches(&format!("${{{var}}}")).count(),
+                2,
+                "both generated Chaptarr backends should preserve {var}"
+            );
+        }
+
+        let expanded = expand_env_vars_for_test(&toml);
+        let parsed =
+            Config::from_toml_str(&expanded, "test").expect("generated Chaptarr config must parse");
+        assert_eq!(parsed.backends.len(), 2);
+    }
+
+    #[test]
+    fn generate_from_env_migrates_private_requested_messages() {
+        let set = ["DISCORD__TOKEN", "CHAPTARR__URL", "CHAPTARR__API"];
+        let toml = generate_from_env(
+            |k| set.contains(&k) || k == "DISCORD__REQUESTED_MSG_STYLE",
+            |k| (k == "DISCORD__REQUESTED_MSG_STYLE").then(|| ":none".to_string()),
+        )
+        .expect("should generate");
+
+        assert!(toml.contains("public_followup = false"));
+
+        let expanded = expand_env_vars_for_test(&toml);
+        let parsed = Config::from_toml_str(&expanded, "test")
+            .expect("generated config with private follow-up must parse");
+        assert_eq!(parsed.public_followup, Some(false));
+    }
+
+    #[test]
+    fn generate_from_env_keeps_public_requested_message_styles_public() {
+        let set = ["DISCORD__TOKEN", "CHAPTARR__URL", "CHAPTARR__API"];
+
+        for style in [":plain", ":embed"] {
+            let toml = generate_from_env(
+                |k| set.contains(&k) || k == "DISCORD__REQUESTED_MSG_STYLE",
+                |k| (k == "DISCORD__REQUESTED_MSG_STYLE").then(|| style.to_string()),
+            )
+            .expect("should generate");
+
+            assert!(!toml.contains("public_followup = false"));
+            let expanded = expand_env_vars_for_test(&toml);
+            let parsed = Config::from_toml_str(&expanded, "test")
+                .expect("generated config with public follow-up must parse");
+            assert_eq!(parsed.public_followup, None);
+        }
     }
 
     /// Substitute the env vars that the generated configs reference so the
@@ -510,6 +764,17 @@ mod tests {
             ("${SONARR__API}", "key"),
             ("${RADARR__URL}", "http://radarr:7878"),
             ("${RADARR__API}", "key"),
+            ("${CHAPTARR__URL}", "http://chaptarr:8789"),
+            ("${CHAPTARR__API}", "key"),
+            ("${CHAPTARR__EBOOK_ROOTFOLDER}", "/books"),
+            ("${CHAPTARR__AUDIOBOOK_ROOTFOLDER}", "/audiobooks"),
+            ("${CHAPTARR__EBOOK_QUALITY_PROFILE}", "E-Book"),
+            ("${CHAPTARR__AUDIOBOOK_QUALITY_PROFILE}", "Audiobook"),
+            ("${CHAPTARR__EBOOK_METADATA_PROFILE}", "Ebook Default"),
+            (
+                "${CHAPTARR__AUDIOBOOK_METADATA_PROFILE}",
+                "Audiobook Default",
+            ),
             ("${LOG_LEVEL}", "info"),
         ];
         let mut out = toml.to_string();

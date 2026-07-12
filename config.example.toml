@@ -10,7 +10,7 @@
 # ==============================================================================
 
 # Your Discord bot token (from Discord Developer Portal)
-discord_token = "YOUR_DISCORD_BOT_TOKEN"
+discord_token = "${DISCORD_TOKEN}"
 
 # ==============================================================================
 # OPTIONAL GLOBAL SETTINGS
@@ -193,3 +193,50 @@ api_key = "your_sonarr_api_key"
 # url = "http://localhost:5055"
 # api_key = "your_seerr_admin_api_key"
 # media_filter = "tv"
+
+# ------------------------------------------------------------------------------
+# CHAPTARR BACKENDS (Ebooks + Audiobooks)
+# ------------------------------------------------------------------------------
+# Configure both entries to add the two commands provided by DoplarrChaptarr:
+#   /request book
+#   /request audiobook
+#
+# `format` is required and controls the format requested by that command.
+# The six root/profile settings are optional. An omitted value is auto-selected
+# only when Chaptarr exposes exactly one valid option; ambiguous values fail
+# startup and must be configured explicitly. When present, names and paths must
+# match Chaptarr exactly. Both entries carry both formats' defaults because a
+# newly added author must be initialized with Chaptarr's ebook and audiobook
+# settings even though the command requests only one format.
+
+[[backends]]
+media = "book"
+
+[backends.config.Chaptarr]
+url = "http://localhost:8789"
+api_key = "${CHAPTARR_API_KEY}"
+format = "ebook"
+
+# ebook_rootfolder = "/books"
+# audiobook_rootfolder = "/audiobooks"
+# ebook_quality_profile = "E-Book"
+# audiobook_quality_profile = "Audiobook"
+# ebook_metadata_profile = "Ebook Default"
+# audiobook_metadata_profile = "Audiobook Default"
+# openlibrary_covers = true
+
+[[backends]]
+media = "audiobook"
+
+[backends.config.Chaptarr]
+url = "http://localhost:8789"
+api_key = "${CHAPTARR_API_KEY}"
+format = "audiobook"
+
+# ebook_rootfolder = "/books"
+# audiobook_rootfolder = "/audiobooks"
+# ebook_quality_profile = "E-Book"
+# audiobook_quality_profile = "Audiobook"
+# ebook_metadata_profile = "Ebook Default"
+# audiobook_metadata_profile = "Audiobook Default"
+# openlibrary_covers = true

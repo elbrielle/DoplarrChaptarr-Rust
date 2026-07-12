@@ -1,5 +1,5 @@
 {
-  description = "Nix flake for Doplarr (Rust)";
+  description = "Nix flake for DoplarrChaptarr (Rust)";
 
   inputs = {
     nixpkgs.url = "github:NixOS/nixpkgs/nixpkgs-unstable";
@@ -194,11 +194,13 @@
             staticAarch64 = doplarrStaticAarch64;
 
             dockerImage = pkgs.dockerTools.buildLayeredImage {
-              name = "ghcr.io/activexray/doplarr_rs";
+              name = "ghcr.io/elbrielle/doplarrchaptarr";
               tag = "latest";
               contents = [doplarrStatic pkgs.cacert];
               config = {
-                Cmd = ["${doplarrStatic}/bin/doplarr"];
+                Entrypoint = ["${doplarrStatic}/bin/doplarr"];
+                Cmd = ["/config.toml"];
+                User = "65532:65532";
                 ExposedPorts = {};
                 Env = [
                   "SSL_CERT_FILE=${pkgs.cacert}/etc/ssl/certs/ca-bundle.crt"
@@ -207,12 +209,14 @@
             };
 
             dockerImageAarch64 = pkgs.dockerTools.buildLayeredImage {
-              name = "ghcr.io/activexray/doplarr_rs";
+              name = "ghcr.io/elbrielle/doplarrchaptarr";
               tag = "latest";
               architecture = "arm64";
               contents = [doplarrStaticAarch64 pkgs.cacert];
               config = {
-                Cmd = ["${doplarrStaticAarch64}/bin/doplarr"];
+                Entrypoint = ["${doplarrStaticAarch64}/bin/doplarr"];
+                Cmd = ["/config.toml"];
+                User = "65532:65532";
                 ExposedPorts = {};
                 Env = [
                   "SSL_CERT_FILE=${pkgs.cacert}/etc/ssl/certs/ca-bundle.crt"

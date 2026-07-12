@@ -3,6 +3,10 @@ name = "doplarr"
 version.workspace = true
 edition.workspace = true
 license.workspace = true
+authors.workspace = true
+repository.workspace = true
+rust-version.workspace = true
+description = "Discord media requests with Chaptarr ebook and audiobook support"
 
 [dependencies]
 anyhow = "1"

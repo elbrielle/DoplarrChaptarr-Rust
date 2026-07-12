@@ -5,9 +5,9 @@ body:
   - type: markdown
     attributes:
       value: |
-        Thanks for taking the time to fill out this bug report!
+        Thanks for taking the time to fill out this DoplarrChaptarr bug report!
 
-        Please note that we use GitHub issues exclusively for bug reports and feature requests. For support questions, please use our other support channels to get help.
+        GitHub issues are for bug reports and feature requests. For support questions, use GitHub Discussions.
   - type: textarea
     id: description
     attributes:
@@ -19,7 +19,7 @@ body:
     id: version
     attributes:
       label: Version
-      description: What version of Doplarr are you running? (e.g. the Docker image tag, or the version printed in the startup logs.)
+      description: What version of DoplarrChaptarr are you running? (e.g. the Docker image tag, or the version printed in the startup logs.)
     validations:
       required: true
   - type: textarea
@@ -43,15 +43,23 @@ body:
         - Radarr
         - Sonarr
         - Seerr
+        - Chaptarr
         - Multiple
         - Not backend-specific
+    validations:
+      required: true
+  - type: input
+    id: chaptarr-version
+    attributes:
+      label: Chaptarr Version
+      description: If this involves the Chaptarr backend, what Chaptarr version are you running? Find it under System → Status. Otherwise, enter "Not applicable."
     validations:
       required: true
   - type: dropdown
     id: deployment
     attributes:
       label: Deployment Method
-      description: How are you running Doplarr?
+      description: How are you running DoplarrChaptarr?
       options:
         - Docker
         - Nix
@@ -63,7 +71,7 @@ body:
     id: logs
     attributes:
       label: Logs
-      description: Please copy and paste any relevant log output. Setting `log_level = "debug"` (or `trace`) in your config gives us the most to work with. (This will be automatically formatted into code, so no need for backticks.)
+      description: Please paste relevant output using `log_level = "debug"`; do not enable trace logging for a public report. Before submitting, redact Discord interaction and bot tokens, API keys, user/guild/channel IDs, search titles, private configuration values, and internal URLs or hostnames. (This field is automatically formatted, so no backticks are needed.)
       render: shell
   - type: textarea
     id: screenshots
@@ -94,7 +102,7 @@ body:
     id: terms
     attributes:
       label: Code of Conduct
-      description: By submitting this issue, you agree to follow our [Code of Conduct](https://github.com/activexray/doplarr_rs/blob/main/CODE_OF_CONDUCT.md).
+      description: By submitting this issue, you agree to follow our [Code of Conduct](https://github.com/elbrielle/DoplarrChaptarr/blob/main/CODE_OF_CONDUCT.md).
       options:
-        - label: I agree to follow Doplarr's Code of Conduct.
+        - label: I agree to follow DoplarrChaptarr's Code of Conduct.
           required: true
