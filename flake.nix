@@ -61,6 +61,10 @@
         commonArgs = {
           inherit src;
           strictDeps = true;
+          # reqwest's platform verifier initializes a trust store even when a
+          # test only calls a local mock server. Nix sandboxes do not promise a
+          # host CA bundle, so make the certificate input reproducible.
+          SSL_CERT_FILE = "${pkgs.cacert}/etc/ssl/certs/ca-bundle.crt";
           nativeBuildInputs = with pkgs;
             [cmake]
             ++ lib.optionals stdenv.isx86_64 [nasm]
