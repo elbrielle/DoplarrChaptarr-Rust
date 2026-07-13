@@ -6,8 +6,7 @@ on:
             - 'v*'
 
 permissions:
-    contents: write
-    packages: write
+    contents: read
 
 jobs:
     check:
@@ -17,7 +16,7 @@ jobs:
             contents: read
         steps:
             - name: Checkout repository
-              uses: actions/checkout@v6
+              uses: actions/checkout@v7
 
             - name: Verify tag matches Cargo version
               shell: bash
@@ -35,9 +34,12 @@ jobs:
         name: Build Linux artifacts
         needs: check
         runs-on: ubuntu-latest
+        permissions:
+            contents: write
+            packages: write
         steps:
             - name: Checkout repository
-              uses: actions/checkout@v6
+              uses: actions/checkout@v7
 
             - name: Install Nix
               uses: DeterminateSystems/determinate-nix-action@v3
@@ -60,6 +62,12 @@ jobs:
                   nix build .#dockerImageAarch64 --print-build-logs
                   docker load < result
                   docker tag ghcr.io/elbrielle/doplarrchaptarr-rust:latest ghcr.io/elbrielle/doplarrchaptarr-rust:${{ github.ref_name }}-arm64
+
+            # Exercise the exact amd64 image before either architecture is
+            # published. The arm64 image is cross-built on this amd64 runner
+            # and cannot be executed here.
+            - name: Smoke-test release image
+              run: .github/ci/smoke-image.sh ghcr.io/elbrielle/doplarrchaptarr-rust:${{ github.ref_name }}-amd64
 
             - name: Log in to GitHub Container Registry
               uses: docker/login-action@v3
@@ -96,9 +104,11 @@ jobs:
         name: Build Windows artifact
         needs: check
         runs-on: windows-latest
+        permissions:
+            contents: write
         steps:
             - name: Checkout repository
-              uses: actions/checkout@v6
+              uses: actions/checkout@v7
 
             - name: Install Rust
               shell: pwsh

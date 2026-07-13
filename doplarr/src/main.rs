@@ -1,16 +1,7 @@
-use anyhow::bail;
 use clap::Parser;
-use config::{Backend, BackendConfig};
 use discord::InteractionContinue;
-use providers::{
-    MediaBackend, UserFacingError, chaptarr::Chaptarr, radarr::Radarr,
-    seerr::Seerr as SeerrBackend, sonarr::Sonarr,
-};
-use std::{
-    collections::{HashMap, HashSet},
-    sync::Arc,
-    time::Instant,
-};
+use providers::UserFacingError;
+use std::{collections::HashMap, sync::Arc, time::Instant};
 use tokio::{
     sync::{Mutex, mpsc},
     time::{Duration, interval},
@@ -28,6 +19,7 @@ pub mod args;
 pub mod config;
 pub mod discord;
 pub mod providers;
+pub mod startup;
 
 /// Sanitize error messages for Discord users while keeping full details in logs
 fn user_facing_error(err: &anyhow::Error) -> String {
@@ -57,6 +49,16 @@ fn user_facing_error(err: &anyhow::Error) -> String {
 
 type InteractionMap = Arc<Mutex<HashMap<uuid::Uuid, (mpsc::Sender<InteractionContinue>, Instant)>>>;
 
+fn load_config(cli: &args::Cli) -> anyhow::Result<Option<config::Config>> {
+    if cli.check {
+        // Preflight is a deployment gate: a typo or missing bind mount must be
+        // a hard failure, not starter-template generation with exit code zero.
+        config::Config::from_file(&cli.config_file).map(Some)
+    } else {
+        config::Config::load_or_init(&cli.config_file)
+    }
+}
+
 #[tokio::main]
 async fn main() -> anyhow::Result<()> {
     // Parse command line args to get path to config file
@@ -64,7 +66,7 @@ async fn main() -> anyhow::Result<()> {
 
     // Load the config, generating one from environment variables or writing a
     // starter template if it doesn't exist yet
-    let Some(config) = config::Config::load_or_init(cli.config_file.unwrap())? else {
+    let Some(config) = load_config(&cli)? else {
         // A starter template was written; nothing to run until it's filled in
         return Ok(());
     };
@@ -81,46 +83,16 @@ async fn main() -> anyhow::Result<()> {
         "Starting doplarr"
     );
 
-    // Check that we have at least one backend client
-    if config.backends.is_empty() {
-        bail!("At least one media backend is required!");
+    let connected = startup::connect_backends(&config).await?;
+    if cli.check {
+        connected.print_preflight_report()?;
+        return Ok(());
     }
-
-    // Check that all media types are unique
-    let mut media_types = HashSet::new();
-    if !config
-        .backends
-        .iter()
-        .all(|x| media_types.insert(x.media.as_str()))
-    {
-        bail!("There must only be one of each media type");
-    }
-
-    // Build the HTTP request client for backend calls with a reasonable timeout
-    let backend_http = reqwest::Client::builder()
-        .timeout(Duration::from_secs(30))
-        .connect_timeout(Duration::from_secs(10))
-        .build()?;
-
-    // Connect to all available backends, cast into trait objects, and associate with their media types
-    let mut backends = HashMap::new();
-    for Backend { media, config } in &config.backends {
-        let backend: Arc<dyn MediaBackend> = match config {
-            BackendConfig::Radarr { .. } => {
-                Arc::new(Radarr::connect(config.clone(), backend_http.clone()).await?)
-            }
-            BackendConfig::Sonarr { .. } => {
-                Arc::new(Sonarr::connect(config.clone(), backend_http.clone()).await?)
-            }
-            BackendConfig::Seerr { .. } => {
-                Arc::new(SeerrBackend::connect(config.clone(), backend_http.clone()).await?)
-            }
-            BackendConfig::Chaptarr { .. } => {
-                Arc::new(Chaptarr::connect(config.clone(), backend_http.clone()).await?)
-            }
-        };
-        backends.insert(media.as_str(), backend);
-    }
+    let startup::ConnectedBackends {
+        by_media: backends,
+        media_types,
+        ..
+    } = connected;
 
     // We listen for interactions, plus guild events so we can register commands
     // for every guild as Discord announces it (including guilds joined while running)
@@ -137,7 +109,7 @@ async fn main() -> anyhow::Result<()> {
 
     // Build the list of media types we'll register commands for
     info!("Available backends: {:?}", media_types);
-    let command = discord::commands(media_types.iter().copied());
+    let command = discord::commands(media_types.iter().map(String::as_str));
 
     // Cache interactions
     let cache = DefaultInMemoryCache::builder()
@@ -413,4 +385,25 @@ async fn main() -> anyhow::Result<()> {
         }
     }
     Ok(())
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use std::path::PathBuf;
+
+    #[test]
+    fn check_mode_rejects_a_missing_config_instead_of_initializing_one() {
+        let path =
+            std::env::temp_dir().join(format!("doplarr-missing-{}.toml", uuid::Uuid::new_v4()));
+        let cli = args::Cli {
+            check: true,
+            config_file: PathBuf::from(&path),
+        };
+
+        let result = load_config(&cli);
+
+        assert!(result.is_err());
+        assert!(!path.exists());
+    }
 }

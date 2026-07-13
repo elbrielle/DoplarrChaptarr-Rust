@@ -321,6 +321,12 @@ Compatibility is maintained as follows:
 - Require `appName: "Chaptarr"` and a non-empty live version at startup.
   `0.9.720.x` is the tested baseline; a different non-empty version receives a
   clear untested-version warning.
+- Run the exact candidate image with `--check /config.toml` before Discord
+  startup. The command must exercise status, root, quality-profile, and
+  metadata-profile parsing, emit only a sanitized summary, and exit without
+  constructing a Discord client. A version outside the tested line must produce
+  an explicit `unsupported` report and nonzero exit even though normal startup
+  retains warning-only compatibility behavior.
 - If required identity or format fields are absent, disable Chaptarr writes for
   that interaction and return a useful compatibility error. Do not guess.
 - Before claiming support for a new release, run read-only lookup/detail,

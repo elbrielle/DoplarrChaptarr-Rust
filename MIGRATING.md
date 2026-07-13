@@ -201,6 +201,18 @@ tag or image digest and keep the previous working artifact available for
 rollback. The bot reads the TOML path passed as its first argument and defaults
 to `./config.toml` when no path is supplied.
 
+Run the candidate with `--check` before replacing the old Discord container:
+
+```bash
+docker compose run --rm --no-deps doplarrchaptarr --check /config.toml
+```
+
+This loads the same configuration and connects to every selected backend, but
+returns before a Discord client or gateway is created. Treat a successful
+`"discord": "not_contacted"` report as backend/configuration proof, not as a
+substitute for the later interactive search and request checks. A missing
+config file or an untested Chaptarr version is a hard preflight failure.
+
 For the initial release, the pinned image reference is:
 
 ```text

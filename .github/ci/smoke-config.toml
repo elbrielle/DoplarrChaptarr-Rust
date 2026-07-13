@@ -1,0 +1,33 @@
+# Deterministic, secret-free configuration for the built-image smoke test.
+discord_token = "ci-placeholder-not-a-secret"
+public_followup = false
+
+[[backends]]
+media = "book"
+
+[backends.config.Chaptarr]
+url = "http://host.docker.internal:18080"
+api_key = "ci-test-api-key"
+format = "ebook"
+ebook_rootfolder = "/library/ebooks"
+audiobook_rootfolder = "/library/audiobooks"
+ebook_quality_profile = "Ebook Standard"
+audiobook_quality_profile = "Audiobook Standard"
+ebook_metadata_profile = "Ebook Default"
+audiobook_metadata_profile = "Audiobook Default"
+openlibrary_covers = false
+
+[[backends]]
+media = "audiobook"
+
+[backends.config.Chaptarr]
+url = "http://host.docker.internal:18080"
+api_key = "ci-test-api-key"
+format = "audiobook"
+ebook_rootfolder = "/library/ebooks"
+audiobook_rootfolder = "/library/audiobooks"
+ebook_quality_profile = "Ebook Standard"
+audiobook_quality_profile = "Audiobook Standard"
+ebook_metadata_profile = "Ebook Default"
+audiobook_metadata_profile = "Audiobook Default"
+openlibrary_covers = false

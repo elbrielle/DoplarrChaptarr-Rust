@@ -132,7 +132,8 @@ impl Seerr {
         };
 
         require(auth_me_get(&config).await, "Seerr auth validation")?;
-        info!("Connected to Seerr at {}", config.base_path);
+        info!("Connected to Seerr");
+        debug!(url = %config.base_path, "Seerr endpoint");
 
         Ok(Self {
             config,
