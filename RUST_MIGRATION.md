@@ -30,6 +30,11 @@ allows.
 Publishing the source repository does not publish a beta binary or container.
 The moving `main` container job is additionally gated by the repository variable
 `PUBLISH_MAIN_IMAGE=true`, which should remain unset until live validation.
+Ordinary code CI still builds and smoke-tests the exact container, then retains
+the SHA-tagged image tar and checksum as a 14-day workflow artifact for owner
+testing. That artifact is not a public package. When publication is enabled,
+the gated job downloads and pushes that already-tested image rather than
+building a second potentially different artifact.
 Before creating `v4.6.0-chaptarr.1`, complete
 `docs/chaptarr/RELEASE_CHECKLIST.md` against a disposable Chaptarr instance.
 The release workflow treats hyphenated versions as prereleases and does not

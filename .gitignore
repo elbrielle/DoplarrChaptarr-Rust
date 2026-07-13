@@ -5,3 +5,5 @@ config.toml
 .env
 !.env.example
 result
+__pycache__/
+*.py[cod]

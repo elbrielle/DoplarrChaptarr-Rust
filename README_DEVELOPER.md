@@ -38,11 +38,36 @@ Then, add that library to doplarr's Config.toml under backend APIs.
 Under `doplarr/src/providers` add your backend file and add to the `mod.rs`.
 Follow the other backends as an example, implementing the `MediaBackend` and `MediaItem` traits.
 
+Chaptarr is intentionally split by responsibility:
+
+- `providers/chaptarr.rs` owns HTTP operations and the request workflow;
+- `providers/chaptarr/models.rs` owns tolerant API response shapes and custom
+  deserializers;
+- `providers/chaptarr/selection.rs` owns pure compatibility, matching,
+  selection, cover-choice, and format-state helpers.
+
+Keep API-shape drift in `models.rs` and deterministic policy in `selection.rs`.
+Do not move network calls or mutations into the pure helper module.
+
 ### Add Config Settings
 
 In `doplarr/src/config.rs`, add the appropriate configuration settings for use in the config file.
 
 ### Add Initialization
 
-In `doplarr/src/main.rs`, update the `let mut backends = HashMap::new() ...` section to match the new config type, mapping to your constructor.
+In `doplarr/src/startup.rs`, add the config variant to `connect_backends`, map it
+to the provider constructor, and give it a sanitized provider label. Normal
+startup and `--check` deliberately use this same path so CI cannot validate a
+different artifact than Discord uses.
 
+## Deployment verification
+
+Every code CI run builds the actual Nix Docker image and executes
+`.github/ci/smoke-image.sh`. The smoke test runs the image with its hardened
+runtime settings and uses `--check /config.toml` against deterministic mock
+Chaptarr endpoints, including the live-observed nested root-settings shape.
+
+CI saves the exact SHA-tagged image, its checksum, inspect output, and tag as a
+short-lived workflow artifact. The separately gated publish job downloads and
+publishes that already-tested tar rather than rebuilding it. Keep publication
+permissions out of the build/smoke job.

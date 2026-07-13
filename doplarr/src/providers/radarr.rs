@@ -100,7 +100,8 @@ impl Radarr {
         client: reqwest::Client,
     ) -> Result<Self> {
         // Log connection before moving base_path
-        info!("Connecting to Radarr at {}", base_path);
+        info!("Connecting to Radarr");
+        debug!(url = %base_path, "Radarr endpoint");
 
         // Build the API config
         let config = Configuration {

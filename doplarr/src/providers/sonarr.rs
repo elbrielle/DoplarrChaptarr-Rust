@@ -114,7 +114,8 @@ impl Sonarr {
         client: reqwest::Client,
     ) -> Result<Self> {
         // Log connection before moving base_path
-        info!("Connecting to Sonarr at {}", base_path);
+        info!("Connecting to Sonarr");
+        debug!(url = %base_path, "Sonarr endpoint");
 
         // Build the API config
         let config = Configuration {

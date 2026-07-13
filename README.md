@@ -90,6 +90,20 @@ the values into the process. The checked-in `docker-compose.yml` contains the
 same non-root, read-only defaults. Never commit `.env`, a populated config, or
 the output of `docker compose config`, which can expand environment values.
 
+Before starting or replacing the Discord bot, validate the exact container
+against every configured backend without opening a Discord session:
+
+```bash
+docker compose run --rm --no-deps doplarrchaptarr --check /config.toml
+```
+
+Successful preflight prints a sanitized JSON report containing only command
+names, provider types, compatible backend versions when available, and
+`"discord": "not_contacted"`. It never prints URLs, API keys, root paths, or
+profile names. An untested Chaptarr version prints `"status": "unsupported"`
+and exits nonzero; normal startup keeps its warning-only behavior. Normal
+startup remains `docker compose up -d`.
+
 Commands register automatically on startup. If they don't appear right away, wait a minute or restart your Discord client.
 
 ## Configuration
@@ -280,6 +294,8 @@ cargo build --release --locked
 - Test your API keys directly in the \*arr web UI
 - If running in Docker, make sure the container can reach your \*arr services (check network/hostname)
 - Root-folder paths and profile names are case-sensitive and must match the backend exactly
+- Run the same image with `--check /config.toml`; a successful report proves the
+  backends without starting or replacing the Discord session
 
 **Chaptarr search or request errors**
 - Confirm both `/request book` and `/request audiobook` have their own backend entry and format

@@ -21,10 +21,16 @@ the client contract but cannot prove that writes still persist.
 - `cargo build --release -p doplarr --locked`
 - `nix flake check`
 - Validate `docker compose config` without pasting its expanded secret values.
+- Build the exact container with `nix build .#dockerImage`, load it, and run
+  `.github/ci/smoke-image.sh IMAGE`; retain the resulting commit-specific image
+  artifact and checksum.
+- Run the candidate with `--check /config.toml` against the disposable
+  Chaptarr instance and save its sanitized `discord: not_contacted` report.
 
 ## Read-only interaction proof
 
-1. Start both `/request book` and `/request audiobook` backends.
+1. After preflight passes, start both `/request book` and `/request audiobook`
+   backends.
 2. Search each format and open the confirmation screen.
 3. Abandon both interactions without pressing **Request**.
 4. Confirm Chaptarr has no new author, book, monitor change or queued command.
