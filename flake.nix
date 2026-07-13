@@ -38,7 +38,17 @@
             p.rust-bin.fromRustupToolchainFile ./rust-toolchain.toml
         );
 
-        src = craneLib.cleanCargoSource ./.;
+        # Crane's default Cargo source filter intentionally drops non-Rust
+        # files. The Chaptarr tests compile JSON fixtures with `include_str!`,
+        # so those fixtures must be explicit inputs to reproducible Nix builds.
+        unfilteredRoot = ./.;
+        src = lib.fileset.toSource {
+          root = unfilteredRoot;
+          fileset = lib.fileset.unions [
+            (craneLib.fileset.commonCargoSources unfilteredRoot)
+            (lib.fileset.fileFilter (file: file.hasExt "json") unfilteredRoot)
+          ];
+        };
 
         # The build sandbox has no `.git`, so hand the binary's build.rs the
         # flake's own revision. `shortRev` is present for a clean tree, and
