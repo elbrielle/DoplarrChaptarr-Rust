@@ -84,6 +84,16 @@ where
     Option::<T>::deserialize(deserializer).map(Option::unwrap_or_default)
 }
 
+/// Chaptarr has exposed the root-folder `ebook` and `audiobook` keys as both
+/// booleans and nested settings objects. Only an explicit `true` is a format
+/// discriminator; an object exists on both root types and must not select one.
+fn bool_only<'de, D>(deserializer: D) -> std::result::Result<bool, D::Error>
+where
+    D: serde::Deserializer<'de>,
+{
+    Option::<Value>::deserialize(deserializer).map(|value| matches!(value, Some(Value::Bool(true))))
+}
+
 #[derive(Clone)]
 pub struct Chaptarr {
     client: reqwest::Client,
@@ -121,9 +131,9 @@ struct RootFolder {
     name: String,
     #[serde(default = "default_true", deserialize_with = "null_default")]
     accessible: bool,
-    #[serde(default, deserialize_with = "null_default")]
+    #[serde(default, deserialize_with = "bool_only")]
     ebook: bool,
-    #[serde(default, deserialize_with = "null_default")]
+    #[serde(default, deserialize_with = "bool_only")]
     audiobook: bool,
     #[serde(default, deserialize_with = "null_default")]
     is_effective_default_ebook: bool,
@@ -1490,6 +1500,7 @@ mod tests {
     const QUALITY: &str = include_str!("../../tests/fixtures/chaptarr/quality_profiles.json");
     const METADATA: &str = include_str!("../../tests/fixtures/chaptarr/metadata_profiles.json");
     const ROOTS: &str = include_str!("../../tests/fixtures/chaptarr/root_folders.json");
+    const LIVE_ROOTS: &str = include_str!("../../tests/fixtures/chaptarr/root_folders_nested.json");
     const STATUS: &str = include_str!("../../tests/fixtures/chaptarr/system_status.json");
     const OPEN_LIBRARY: &str =
         include_str!("../../tests/fixtures/chaptarr/openlibrary_search.json");
@@ -1647,6 +1658,20 @@ mod tests {
         );
         assert_eq!(
             resolve_root(&roots, ChaptarrFormat::Ebook, None).unwrap(),
+            "/library/ebooks"
+        );
+        assert_eq!(
+            resolve_root(&roots, ChaptarrFormat::Audiobook, None).unwrap(),
+            "/library/audiobooks"
+        );
+    }
+
+    #[test]
+    fn nested_root_settings_are_not_format_flags() {
+        let roots: Vec<RootFolder> = serde_json::from_str(LIVE_ROOTS).unwrap();
+        assert!(roots.iter().all(|root| !root.ebook && !root.audiobook));
+        assert_eq!(
+            resolve_root(&roots, ChaptarrFormat::Ebook, Some("/library/ebooks")).unwrap(),
             "/library/ebooks"
         );
         assert_eq!(

@@ -74,6 +74,12 @@ the client uses Chaptarr's format/default flags, then conservative `ebook` or
 startup. A root explicitly marked `accessible: false` is never selectable. Do
 not expose a local root path in a Discord message or public issue report.
 
+Chaptarr `0.9.720.0` may return the root-folder keys `ebook` and `audiobook` as
+nested settings objects on every root, rather than boolean format flags. Those
+objects are accepted for compatibility but never treated as discriminators;
+only an explicit boolean `true` may select a format. Exact configured paths are
+therefore preferred, with conservative path/name inference as the fallback.
+
 ### Book rows
 
 Chaptarr `0.9.720.0` exposes row-oriented state:

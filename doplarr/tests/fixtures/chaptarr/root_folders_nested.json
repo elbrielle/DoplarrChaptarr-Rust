@@ -1,0 +1,38 @@
+[
+  {
+    "id": 1,
+    "name": "Audiobooks",
+    "path": "/library/audiobooks",
+    "accessible": true,
+    "ebook": {
+      "writeAudioBookShelfMetadataJson": false,
+      "writeAudioBookShelfCover": false,
+      "tags": []
+    },
+    "audiobook": {
+      "writeAudioBookShelfMetadataJson": false,
+      "writeAudioBookShelfCover": false,
+      "tags": []
+    },
+    "isEffectiveDefaultEbook": false,
+    "isEffectiveDefaultAudiobook": false
+  },
+  {
+    "id": 2,
+    "name": "Ebooks",
+    "path": "/library/ebooks",
+    "accessible": true,
+    "ebook": {
+      "writeAudioBookShelfMetadataJson": false,
+      "writeAudioBookShelfCover": false,
+      "tags": []
+    },
+    "audiobook": {
+      "writeAudioBookShelfMetadataJson": false,
+      "writeAudioBookShelfCover": false,
+      "tags": []
+    },
+    "isEffectiveDefaultEbook": false,
+    "isEffectiveDefaultAudiobook": false
+  }
+]
