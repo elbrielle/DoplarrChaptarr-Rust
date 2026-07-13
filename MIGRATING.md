@@ -204,7 +204,7 @@ to `./config.toml` when no path is supplied.
 For the initial release, the pinned image reference is:
 
 ```text
-ghcr.io/elbrielle/doplarrchaptarr:v4.6.0-chaptarr.1
+ghcr.io/elbrielle/doplarrchaptarr-rust:v4.6.0-chaptarr.1
 ```
 
 See [config.example.toml](config.example.toml) for a full annotated reference.

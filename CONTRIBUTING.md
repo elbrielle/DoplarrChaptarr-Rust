@@ -24,8 +24,8 @@ upstream files keep their recorded copyright and compatible license notices.
 1. [Fork](https://help.github.com/articles/fork-a-repo/) the repository to your own GitHub account and [clone](https://help.github.com/articles/cloning-a-repository/) it to your local device:
 
    ```bash
-   git clone https://github.com/elbrielle/DoplarrChaptarr.git
-   cd DoplarrChaptarr/
+   git clone https://github.com/elbrielle/DoplarrChaptarr-Rust.git
+   cd DoplarrChaptarr-Rust/
    ```
 
 2. Add the remote `upstream`:

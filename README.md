@@ -12,6 +12,11 @@ A Discord bot for requesting movies, television, ebooks, and audiobooks through
 \*arr-style backends, written in Rust. This is the Rust successor to the original
 Clojure DoplarrChaptarr fork and is based on the rewritten Rust Doplarr.
 
+The original Clojure implementation remains available in
+[`elbrielle/DoplarrChaptarr`](https://github.com/elbrielle/DoplarrChaptarr).
+This repository is the maintained successor. Source may be published before a
+binary beta; releases remain gated by the disposable Chaptarr checklist below.
+
 Each backend creates a `/request <media>` slash command. Chaptarr adds the same
 two public commands as the old fork: `/request book` and `/request audiobook`.
 
@@ -56,7 +61,7 @@ After the first release is published, the equivalent pinned Compose service is:
 ```yaml
 services:
   doplarrchaptarr:
-    image: ghcr.io/elbrielle/doplarrchaptarr:v4.6.0-chaptarr.1
+    image: ghcr.io/elbrielle/doplarrchaptarr-rust:v4.6.0-chaptarr.1
     container_name: doplarrchaptarr
     restart: unless-stopped
     init: true
@@ -296,9 +301,9 @@ cargo build --release --locked
 
 See [MIGRATING.md](MIGRATING.md) for the full mapping from the old Clojure
 Doplarr and DoplarrChaptarr configuration to TOML, including the six existing
-`CHAPTARR__*` root/profile variables. Maintainers replacing the existing public
-repository should also read [RUST_MIGRATION.md](RUST_MIGRATION.md); the Clojure
-and Rust histories are unrelated and cannot use a normal merge.
+`CHAPTARR__*` root/profile variables. The separate-repository decision and
+upstream maintenance boundary are recorded in
+[RUST_MIGRATION.md](RUST_MIGRATION.md).
 
 ## Development
 

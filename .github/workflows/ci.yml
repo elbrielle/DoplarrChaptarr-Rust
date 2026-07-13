@@ -61,7 +61,10 @@ jobs:
         name: Build and Push Docker Image
         needs: check
         runs-on: ubuntu-latest
-        if: github.event_name == 'push' && github.ref == 'refs/heads/main'
+        if: >-
+            github.event_name == 'push' &&
+            github.ref == 'refs/heads/main' &&
+            vars.PUBLISH_MAIN_IMAGE == 'true'
         steps:
             - name: Checkout repository
               uses: actions/checkout@v6
@@ -83,5 +86,5 @@ jobs:
 
             - name: Push Docker image
               run: |
-                  docker tag ghcr.io/elbrielle/doplarrchaptarr:latest ghcr.io/elbrielle/doplarrchaptarr:main
-                  docker push ghcr.io/elbrielle/doplarrchaptarr:main
+                  docker tag ghcr.io/elbrielle/doplarrchaptarr-rust:latest ghcr.io/elbrielle/doplarrchaptarr-rust:main
+                  docker push ghcr.io/elbrielle/doplarrchaptarr-rust:main

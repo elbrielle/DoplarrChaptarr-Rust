@@ -1,7 +1,7 @@
 # Unreleased beta reference. Build locally until this exact tag is published.
 services:
     doplarrchaptarr:
-        image: ghcr.io/elbrielle/doplarrchaptarr:v4.6.0-chaptarr.1
+        image: ghcr.io/elbrielle/doplarrchaptarr-rust:v4.6.0-chaptarr.1
         container_name: doplarrchaptarr
         restart: unless-stopped
         init: true

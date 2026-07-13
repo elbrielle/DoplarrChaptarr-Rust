@@ -7,7 +7,7 @@ version = "4.6.0-chaptarr.1"
 edition = "2024"
 license = "GPL-3.0-only"
 authors = ["Elisha Lucero <ebriellelucero@gmail.com>"]
-repository = "https://github.com/elbrielle/DoplarrChaptarr"
+repository = "https://github.com/elbrielle/DoplarrChaptarr-Rust"
 rust-version = "1.96"
 
 [workspace.metadata.crane]

@@ -194,7 +194,7 @@
             staticAarch64 = doplarrStaticAarch64;
 
             dockerImage = pkgs.dockerTools.buildLayeredImage {
-              name = "ghcr.io/elbrielle/doplarrchaptarr";
+              name = "ghcr.io/elbrielle/doplarrchaptarr-rust";
               tag = "latest";
               contents = [doplarrStatic pkgs.cacert];
               config = {
@@ -209,7 +209,7 @@
             };
 
             dockerImageAarch64 = pkgs.dockerTools.buildLayeredImage {
-              name = "ghcr.io/elbrielle/doplarrchaptarr";
+              name = "ghcr.io/elbrielle/doplarrchaptarr-rust";
               tag = "latest";
               architecture = "arm64";
               contents = [doplarrStaticAarch64 pkgs.cacert];
