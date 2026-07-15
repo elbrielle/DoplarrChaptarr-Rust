@@ -234,15 +234,24 @@ pub(super) fn local_row_matches_item(
     }
 }
 
-pub(super) fn search_shape_matches_format(book: &BookShape, format: ChaptarrFormat) -> bool {
+/// Rank duplicate lookup projections without treating a projection as an
+/// availability claim. Chaptarr can return an audiobook-shaped projection for
+/// a work requested as an ebook, so even a score of zero remains searchable.
+pub(super) fn search_format_affinity(book: &BookShape, format: ChaptarrFormat) -> u8 {
     if !book.media_type.is_empty() {
-        return book.media_type.eq_ignore_ascii_case(format_name(format));
+        return u8::from(book.media_type.eq_ignore_ascii_case(format_name(format))) * 3;
     }
     let flags: Vec<_> = book.editions.iter().filter_map(|e| e.is_ebook).collect();
-    flags.is_empty()
-        || flags
-            .into_iter()
-            .any(|v| v == (format == ChaptarrFormat::Ebook))
+    if flags.is_empty() {
+        1
+    } else if flags
+        .into_iter()
+        .any(|v| v == (format == ChaptarrFormat::Ebook))
+    {
+        2
+    } else {
+        0
+    }
 }
 
 pub(super) fn format_is_monitored(value: &Value, format: ChaptarrFormat) -> bool {
@@ -531,6 +540,18 @@ mod tests {
         );
         let junk: BookShape = serde_json::from_value(rows[2].clone()).unwrap();
         assert!(junk_title(&junk.title));
+    }
+
+    #[test]
+    fn lookup_projection_is_a_preference_not_an_exclusion() {
+        let mut book = lookup_book();
+        book.media_type = "audiobook".into();
+        assert_eq!(search_format_affinity(&book, ChaptarrFormat::Ebook), 0);
+        assert_eq!(search_format_affinity(&book, ChaptarrFormat::Audiobook), 3);
+
+        book.media_type.clear();
+        assert_eq!(search_format_affinity(&book, ChaptarrFormat::Ebook), 2);
+        assert_eq!(search_format_affinity(&book, ChaptarrFormat::Audiobook), 2);
     }
 
     #[test]

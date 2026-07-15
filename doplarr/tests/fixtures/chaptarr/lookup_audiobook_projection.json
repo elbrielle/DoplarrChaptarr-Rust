@@ -1,0 +1,27 @@
+[
+  {
+    "id": 0,
+    "title": "The Clockwork Orchard",
+    "titleSlug": "the-clockwork-orchard-mara-vale",
+    "foreignBookId": "hc:work-1001",
+    "foreignEditionId": "az:ZZ00000001",
+    "releaseDate": "2024-05-14T00:00:00Z",
+    "overview": "A synthetic work returned through an audiobook projection.",
+    "mediaType": "audiobook",
+    "author": {
+      "id": 0,
+      "authorName": "Mara Vale",
+      "foreignAuthorId": "hc:author-2001"
+    },
+    "editions": [
+      {
+        "title": "The Clockwork Orchard",
+        "foreignEditionId": "az:ZZ00000001",
+        "isEbook": false,
+        "images": []
+      }
+    ],
+    "localEbookBooks": [],
+    "localAudiobookBooks": []
+  }
+]

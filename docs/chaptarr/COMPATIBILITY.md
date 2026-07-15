@@ -33,8 +33,10 @@ put it in a URL, log line, fixture, or Discord response.
 | `POST` | `/command` | Queue one `BookSearch`, or a narrowly gated `RefreshAuthor` | command acknowledgement; the body is otherwise opaque |
 
 Unknown response fields must be ignored. Fields used only for ranking or
-covers must be optional. A missing identity, format discriminator, or local
-row ID is not optional: stop before a write rather than guessing.
+covers must be optional. A missing identity is not optional. A format
+discriminator and local row ID become mandatory when resolving the exact local
+row before a write; they are not required merely to display a work-level lookup
+result.
 
 ## Shape and field rules
 
@@ -55,6 +57,14 @@ row ID is not optional: stop before a write rather than guessing.
 
 Lookup order is not stable and is not a ranking guarantee. Never use a local
 audiobook ID to satisfy an ebook request, or the reverse.
+
+The lookup row's `mediaType` and edition `isEbook` values describe the metadata
+projection Chaptarr returned; they do not prove that the work cannot be
+requested in the other format. Live `0.9.720.0` testing returned only
+`audiobook` projections for generic queries initiated as ebook searches.
+Retain those work results, prefer a requested-format projection when the same
+foreign work appears more than once, and enforce format only when selecting a
+local row before mutation.
 
 ### Profile and root discriminators
 
@@ -207,8 +217,9 @@ verifying every silent-write-prone step is more important than minimizing GETs.
 4. Re-resolve the selected lookup identity. Read local author/book state and
    short-circuit available or already-requested rows before changing an author.
 5. If the author is new, `POST /book` with both roots, all four profile IDs,
-   every book-level monitor flag false, only the requested format's author-level
-   `*MonitorFuture` gate true, and search-on-add false. If the author exists but
+   an explicit requested `mediaType`, every book-level monitor flag false, only
+   the requested format's author-level `*MonitorFuture` gate true, and
+   search-on-add false. If the author exists but
    the exact work does not, post the selected work with that local `authorId`.
    A post response is only an acknowledgement and never implies that a usable
    or correctly identified row already exists.
