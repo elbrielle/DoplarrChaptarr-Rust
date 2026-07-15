@@ -13,7 +13,7 @@ use serde_json::{Value, json};
 use std::{
     any::Any,
     cmp::Reverse,
-    collections::{HashMap, HashSet, VecDeque},
+    collections::{HashMap, VecDeque},
     sync::{Arc, OnceLock, Weak},
     time::Duration,
 };
@@ -451,6 +451,7 @@ impl Chaptarr {
         json!({
             "title": item.book.title,
             "foreignBookId": item.book.foreign_book_id,
+            "mediaType": format_name(self.format),
             "monitored": false,
             "ebookMonitored": false,
             "audiobookMonitored": false,
@@ -585,19 +586,38 @@ impl MediaBackend for Chaptarr {
     async fn search(&self, term: &str) -> Result<Vec<Box<dyn MediaItem>>> {
         info!(format = ?self.format, "Searching Chaptarr for book");
         let lookup = self.lookup(term).await?;
+        let raw_count = lookup.len();
         let mut items = Vec::new();
-        let mut seen = HashSet::new();
+        let mut item_affinities = Vec::new();
+        let mut seen = HashMap::new();
+        let mut malformed_count = 0;
+        let mut incomplete_identity_count = 0;
+        let mut junk_count = 0;
+        let mut duplicate_count = 0;
+        let mut other_format_projection_count = 0;
         for raw in lookup {
             let Ok(book) = serde_json::from_value::<BookShape>(raw.clone()) else {
+                malformed_count += 1;
                 warn!("Skipping malformed Chaptarr lookup result");
                 continue;
             };
-            if !book_identity_complete(&book)
-                || junk_title(&book.title)
-                || !search_shape_matches_format(&book, self.format)
-            {
-                debug!(title = %book.title, "Skipping incomplete or incompatible Chaptarr lookup result");
+            if !book_identity_complete(&book) {
+                incomplete_identity_count += 1;
+                debug!(title = %book.title, "Skipping incomplete Chaptarr lookup result");
                 continue;
+            }
+            if junk_title(&book.title) {
+                junk_count += 1;
+                debug!(title = %book.title, "Skipping Chaptarr lookup result marked as non-work material");
+                continue;
+            }
+            // Chaptarr's lookup endpoint projects a work through one metadata
+            // format. A row labelled `audiobook` can still be the correct work
+            // for an ebook request (and vice versa), so this is a preference
+            // for duplicate projections, never a search-stage exclusion.
+            let format_affinity = search_format_affinity(&book, self.format);
+            if format_affinity == 0 {
+                other_format_projection_count += 1;
             }
             let key = if book.foreign_book_id.is_empty() {
                 format!(
@@ -608,9 +628,6 @@ impl MediaBackend for Chaptarr {
             } else {
                 book.foreign_book_id.clone()
             };
-            if !seen.insert(key) {
-                continue;
-            }
             let author = book.author.author_name.trim();
             let display_title = if author.is_empty() {
                 book.title.clone()
@@ -624,12 +641,23 @@ impl MediaBackend for Chaptarr {
                 ChaptarrFormat::Audiobook => &book.local_audiobook_books,
             };
             let existing_book_id = local.iter().find_map(|b| positive_id(Some(&b.id)));
-            items.push(ChaptarrItem {
+            let item = ChaptarrItem {
                 book,
                 display_title,
                 cover,
                 existing_book_id,
-            });
+            };
+            if let Some(&index) = seen.get(&key) {
+                duplicate_count += 1;
+                if format_affinity > item_affinities[index] {
+                    items[index] = item;
+                    item_affinities[index] = format_affinity;
+                }
+                continue;
+            }
+            seen.insert(key, items.len());
+            items.push(item);
+            item_affinities.push(format_affinity);
         }
 
         if self.openlibrary_covers && items.iter().any(|item| item.cover.is_none()) {
@@ -647,7 +675,17 @@ impl MediaBackend for Chaptarr {
         }
         let query = normalize(term);
         items.sort_by_key(|item| Reverse(search_rank(&item.book.title, &query)));
-        debug!(count = items.len(), "Chaptarr search complete");
+        info!(
+            format = ?self.format,
+            raw_count,
+            accepted_count = items.len(),
+            malformed_count,
+            incomplete_identity_count,
+            junk_count,
+            duplicate_count,
+            other_format_projection_count,
+            "Chaptarr search complete"
+        );
         Ok(items
             .into_iter()
             .map(|item| Box::new(item) as Box<dyn MediaItem>)
@@ -890,6 +928,8 @@ mod tests {
     use tokio::net::TcpListener;
 
     const LOOKUP: &str = include_str!("../../tests/fixtures/chaptarr/lookup.json");
+    const AUDIOBOOK_PROJECTION_LOOKUP: &str =
+        include_str!("../../tests/fixtures/chaptarr/lookup_audiobook_projection.json");
     const AUTHOR: &str = include_str!("../../tests/fixtures/chaptarr/author.json");
 
     fn backend(format: ChaptarrFormat) -> Chaptarr {
@@ -921,6 +961,17 @@ mod tests {
                 .local_ebook_books
                 .iter()
                 .find_map(|row| positive_id(Some(&row.id))),
+            book,
+        }
+    }
+
+    fn audiobook_projection_item() -> ChaptarrItem {
+        let rows: Vec<Value> = serde_json::from_str(AUDIOBOOK_PROJECTION_LOOKUP).unwrap();
+        let book: BookShape = serde_json::from_value(rows[0].clone()).unwrap();
+        ChaptarrItem {
+            display_title: format!("{} — {}", book.title, book.author.author_name),
+            cover: None,
+            existing_book_id: None,
             book,
         }
     }
@@ -1018,6 +1069,7 @@ mod tests {
     fn new_author_body_contains_both_format_settings_but_no_book_monitoring() {
         let item = lookup_item();
         let body = backend(ChaptarrFormat::Audiobook).new_author_body(&item);
+        assert_eq!(body["mediaType"], "audiobook");
         assert_eq!(body["rootFolderPath"], "/library/audiobooks");
         assert_eq!(body["ebookQualityProfileId"], 11);
         assert_eq!(body["audiobookQualityProfileId"], 12);
@@ -1029,21 +1081,24 @@ mod tests {
         assert_eq!(body["author"]["audiobookMonitorFuture"], true);
     }
 
+    #[test]
+    fn new_author_ebook_body_overrides_audiobook_lookup_projection() {
+        let item = audiobook_projection_item();
+        assert_eq!(item.book.media_type, "audiobook");
+
+        let body = backend(ChaptarrFormat::Ebook).new_author_body(&item);
+
+        assert_eq!(body["mediaType"], "ebook");
+        assert_eq!(body["rootFolderPath"], "/library/ebooks");
+        assert_eq!(body["author"]["ebookMonitorFuture"], true);
+        assert_eq!(body["author"]["audiobookMonitorFuture"], false);
+        assert_eq!(body["monitored"], false);
+    }
+
     #[tokio::test]
     async fn search_and_confirmation_use_only_get_requests() {
-        let lookup = json!([{
-            "title": "The Clockwork Orchard",
-            "overview": "A synthetic test book.",
-            "foreignBookId": "hc:work-1001",
-            "author": {
-                "id": 0,
-                "authorName": "Mara Vale",
-                "foreignAuthorId": "hc:author-1001"
-            },
-            "editions": [{"isEbook": true}]
-        }]);
         let (base_url, requests, server) =
-            mock_api(vec![lookup.to_string(), "[]".to_string()]).await;
+            mock_api(vec![AUDIOBOOK_PROJECTION_LOOKUP.into(), "[]".to_string()]).await;
         let mut chaptarr = backend(ChaptarrFormat::Ebook);
         chaptarr.base_url = base_url;
         chaptarr.client = reqwest::Client::builder()
@@ -1053,6 +1108,9 @@ mod tests {
 
         let results = chaptarr.search("Clockwork Orchard").await.unwrap();
         assert_eq!(results.len(), 1);
+        let item = results[0].as_any().downcast_ref::<ChaptarrItem>().unwrap();
+        assert_eq!(item.book.media_type, "audiobook");
+        assert_eq!(item.existing_book_id, None);
         assert!(
             chaptarr
                 .additional_details(results[0].as_ref())
@@ -1074,6 +1132,76 @@ mod tests {
                 .iter()
                 .all(|request| request_line(request).starts_with("GET "))
         );
+    }
+
+    #[tokio::test]
+    async fn cross_format_projection_uses_only_the_requested_local_id_bridge() {
+        let lookup = json!([{
+            "title": "The Clockwork Orchard",
+            "foreignBookId": "hc:work-1001",
+            "mediaType": "audiobook",
+            "author": {
+                "authorName": "Mara Vale",
+                "foreignAuthorId": "hc:author-1001"
+            },
+            "editions": [{"isEbook": false}],
+            "localEbookBooks": [{"id": 4101}],
+            "localAudiobookBooks": [{"id": 5101}]
+        }]);
+        let (base_url, _requests, server) = mock_api(vec![lookup.to_string()]).await;
+        let mut chaptarr = backend(ChaptarrFormat::Ebook);
+        chaptarr.base_url = base_url;
+
+        let results = chaptarr.search("Clockwork Orchard").await.unwrap();
+        assert_eq!(results.len(), 1);
+        let item = results[0].as_any().downcast_ref::<ChaptarrItem>().unwrap();
+        assert_eq!(item.book.media_type, "audiobook");
+        assert_eq!(item.existing_book_id, Some(4101));
+        timeout(Duration::from_secs(2), server)
+            .await
+            .expect("mock server should finish")
+            .unwrap();
+    }
+
+    #[tokio::test]
+    async fn requested_format_projection_wins_when_lookup_repeats_a_work() {
+        let lookup = json!([
+            {
+                "title": "The Clockwork Orchard",
+                "foreignBookId": "hc:work-1001",
+                "mediaType": "audiobook",
+                "author": {
+                    "authorName": "Mara Vale",
+                    "foreignAuthorId": "hc:author-1001"
+                },
+                "editions": [{"isEbook": false}],
+                "localEbookBooks": []
+            },
+            {
+                "title": "The Clockwork Orchard",
+                "foreignBookId": "hc:work-1001",
+                "mediaType": "ebook",
+                "author": {
+                    "authorName": "Mara Vale",
+                    "foreignAuthorId": "hc:author-1001"
+                },
+                "editions": [{"isEbook": true}],
+                "localEbookBooks": [{"id": 4101}]
+            }
+        ]);
+        let (base_url, _requests, server) = mock_api(vec![lookup.to_string()]).await;
+        let mut chaptarr = backend(ChaptarrFormat::Ebook);
+        chaptarr.base_url = base_url;
+
+        let results = chaptarr.search("Clockwork Orchard").await.unwrap();
+        assert_eq!(results.len(), 1);
+        let item = results[0].as_any().downcast_ref::<ChaptarrItem>().unwrap();
+        assert_eq!(item.book.media_type, "ebook");
+        assert_eq!(item.existing_book_id, Some(4101));
+        timeout(Duration::from_secs(2), server)
+            .await
+            .expect("mock server should finish")
+            .unwrap();
     }
 
     #[tokio::test]
