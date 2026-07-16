@@ -368,7 +368,7 @@ dependencies = [
 
 [[package]]
 name = "doplarr"
-version = "4.6.0-chaptarr.1"
+version = "4.6.1-chaptarr.1"
 dependencies = [
  "anyhow",
  "async-trait",

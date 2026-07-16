@@ -23,13 +23,16 @@ put it in a URL, log line, fixture, or Discord response.
 | `GET` | `/author` | Resolve an already-local author | `id`, `foreignAuthorId`, `authorName` |
 | `GET` | `/author/{id}` | Read and verify the requested-format author gate | `id`, `ebookMonitorFuture`, `audiobookMonitorFuture` |
 | `GET` | `/book?authorId=...` | Poll and rank local format rows | fields listed under "Book rows" |
-| `GET` | `/book/{id}` | Verify status and monitor writes | fields listed under "Book rows" |
+| `GET` | `/book/{id}` | Verify status and monitor writes; its `editions` array is always empty and never edition truth | fields listed under "Book rows" |
+| `GET` | `/edition?bookId=...` | The only source of local edition truth | `id`, authoritative `format`, `monitored`; language, title, and identifiers when present |
+| `GET` | `/command` | Detect in-flight catalog commands while a new author's import settles | `name`, `status`; `body.authorId`/`body.authorIds` when present |
 | `GET` | `/qualityprofile` | Resolve per-format quality profiles | `id`, `name`, `profileType` |
 | `GET` | `/metadataprofile` | Resolve per-format metadata profiles | `id`, `name`, `profileType` |
 | `GET` | `/rootfolder` | Resolve accessible roots | `id`, `path`; `accessible` when present |
 | `POST` | `/book` | Add a new author/catalog or an exact work under an existing author | created book row with `authorId`, or enough identity to re-resolve it |
 | `PUT` | `/author/{id}` | Enable one format's author-level monitor gate | response is not trusted; verify with `GET` |
-| `PUT` | `/book/monitor` | Monitor one selected book row | HTTP success only; verify with `GET /book/{id}` |
+| `PUT` | `/book/{id}` | Select exactly one edition via the complete book body; monitor flags in this body are silently ignored | response is not trusted; verify with `GET /edition?bookId=...` |
+| `PUT` | `/book/monitor` | Monitor one selected book row (the only book-level monitor write that persists) | HTTP success only; verify with `GET /book/{id}` |
 | `POST` | `/command` | Queue one `BookSearch`, or a narrowly gated `RefreshAuthor` | command acknowledgement; the body is otherwise opaque |
 
 Unknown response fields must be ignored. Fields used only for ranking or
@@ -52,8 +55,9 @@ result.
 - `images`, `remoteCover`, and edition-level `images`.
 - `localEbookBooks` and `localAudiobookBooks`. Positive IDs in the array for
   the requested format are a better local shortcut than the top-level `id`.
-- `editions`, which may carry `foreignEditionId`, `isEbook`, `isbn13`, `asin`,
-  language, and additional cover images.
+- `editions`, which may carry projected `foreignEditionId`, `isEbook`,
+  `isbn13`, `asin`, language, and additional cover images. These lookup fields
+  are discovery hints, not authoritative local-edition format state.
 
 Lookup order is not stable and is not a ranking guarantee. Never use a local
 audiobook ID to satisfy an ebook request, or the reverse.
@@ -112,8 +116,12 @@ For the requested format, status is evaluated in this order:
 
 1. **Available:** matching row has `hasFiles: true`, or its matching statistics
    report a positive `bookFileCount`.
-2. **Already requested:** matching row has `grabbed: true` or is monitored.
-3. **Unmonitored:** neither condition is true.
+2. **Active or recently acknowledged request:** the matching row is grabbed,
+   or a monitor flag is present and an exact `BookSearch` is queued/started, or
+   the same bot process retains a recent valid acknowledgement for that row.
+3. **Partial request:** one or more monitor/edition writes exist without the
+   full verified state or a confirmed search. A retry repairs this state.
+4. **Unmonitored:** none of those conditions is true.
 
 Where per-format legacy fields exist, use only the pair belonging to the
 requested format. Prefer the row-oriented `0.9.720.0` fields when `mediaType`
@@ -136,6 +144,47 @@ resolves, report a metadata-pending error; do not search a sibling work.
 target remains a placeholder. It is not a general retry: refresh can reapply
 metadata-profile filters and remove editions.
 
+### Editions, duplicate pockets, and catalog settling
+
+The following behaviors were confirmed by hand against live Chaptarr
+`0.9.720.0` during the 2026-07-15 new-author incident repair. Each one can make
+a naive request pipeline fail silently or appear to work:
+
+The incident was not a missing `BookSearch` call: the old path queued a search
+for a Farseer collection row while Robin Hobb's catalog refresh was still in
+flight, and that search returned zero results. The row had no selected usable
+ebook edition, and later refresh work removed its partial monitor state.
+
+- `GET /book/{id}` (and the `/book?authorId=...` rows) always report
+  `"editions": []`. Edition truth comes only from `GET /edition?bookId={id}`.
+  Verifying "does this book have editions?" through the book resource wrongly
+  concludes there are none.
+- `PUT /book/{id}` silently ignores `monitored` and the per-format monitor
+  flags: no error is returned and the flags stay false. Book-level monitoring
+  persists only through `PUT /book/monitor` with
+  `{"bookIds": [...], "monitored": true}`.
+- Edition selection does persist through the full-book `PUT /book/{id}`: send
+  the complete book body plus `anyEditionOk: false` and the full `editions`
+  array with exactly one edition `monitored: true` and `manualAdd: true`,
+  mirroring the Chaptarr UI's manual pick.
+- Local edition `format` is authoritative. Select Ebook only for an ebook
+  request and Audiobook only for an audiobook request. Physical is a separate
+  value and must never be inferred to mean Audiobook merely because a legacy
+  `isEbook` flag is false or missing.
+- New-author imports can duplicate one work into multiple local rows
+  ("pockets", logged server-side as `[SERVER-BUG-CANDIDATE] ... provider id(s)
+  appearing in multiple pockets`). The pockets are not equivalent: one row can
+  carry many usable requested-format editions while its twin carries none.
+  Requests must choose the row with usable requested-format editions and
+  monitor only that row, and already-requested checks must span every matching
+  row rather than one preferred row.
+- Catalog population after adding an author is not instantaneous. A 400+ book
+  author imports and refreshes for minutes, and monitor or edition writes made
+  before the catalog settles can be silently reverted by the tail of that
+  import. Require successful command polls, no author-relevant command in
+  flight, and stable book plus target-edition fingerprints before mutating.
+  Command/API errors and the deadline fail closed.
+
 ## Search and selection invariants
 
 Search should be useful without becoming inventive:
@@ -150,10 +199,17 @@ Search should be useful without becoming inventive:
 4. Prefer exact normalized title matches, then narrowly allow subtitle variants
    separated by `:`, `-`, `—`, or parentheses. A plain shared prefix is not a
    match. Never cross authors after the user has selected one.
-5. Within that title tier, prefer an explicit requested `mediaType`, a resolved
+5. This provider requests one work per Discord interaction. Reject results with
+   clear multi-book title signals - such as a title ending in `bundle` or
+   `trilogy`, an `omnibus`, a box set, a `complete ... series`, or an explicit
+   numbered book collection/set - with an instruction to request an individual
+   title. A bare word such as `collection` or `series` is not sufficient because
+   it can be part of a legitimate single-work title. Do not silently expand one
+   selection into multiple works or substitute a bundle for its members.
+6. Within that title tier, prefer an explicit requested `mediaType`, a resolved
    row, and a title whose length is closest to the selected lookup title.
    Popularity, votes, and release date are final tie-breakers.
-6. If no row matches the selected title and format, stop. Falling back to a
+7. If no row matches the selected title and format, stop. Falling back to a
    popular sibling title requests the wrong book.
 
 Provider IDs are hints, not universal identity. Lookup may return a Goodreads
@@ -214,8 +270,9 @@ verifying every silent-write-prone step is more important than minimizing GETs.
    fetch no cover bytes and perform no write.
 3. Let the user select a result, format-specific options, and explicit Request
    confirmation. Disable the Request button immediately after the click.
-4. Re-resolve the selected lookup identity. Read local author/book state and
-   short-circuit available or already-requested rows before changing an author.
+4. Re-resolve the selected lookup identity. Short-circuit an available work or
+   a fully consistent active request. Do not treat a bare monitor flag as proof
+   that a search was queued; carry partial state forward for repair.
 5. If the author is new, `POST /book` with both roots, all four profile IDs,
    an explicit requested `mediaType`, every book-level monitor flag false, only
    the requested format's author-level `*MonitorFuture` gate true, and
@@ -223,26 +280,53 @@ verifying every silent-write-prone step is more important than minimizing GETs.
    the exact work does not, post the selected work with that local `authorId`.
    A post response is only an acknowledgement and never implies that a usable
    or correctly identified row already exists.
-6. Poll `GET /book?authorId=...` with a bounded deadline. Select only the exact
+6. After a new-author add (and after any `RefreshAuthor` the bot itself
+   queues), wait for the catalog to settle before any further step. Require
+   successful `GET /command` samples with no queued/started command that could
+   touch the author, plus unchanged book and target-edition fingerprints across
+   consecutive samples, all within a hard deadline. A command/API error or
+   timeout fails closed before monitoring or search.
+7. Poll `GET /book?authorId=...` with a bounded deadline. Reject a result with a
+   clear multi-book title signal and tell the requester to search for an
+   individual title. Otherwise select only the exact
    title/author/requested-format row; when both sides expose `foreignBookId`, it
    must match. Require a resolved row and repeat the identity check immediately
    before monitoring and after the monitor read-back.
-7. Read the author. If the requested format's `*MonitorFuture` gate is false,
+8. Re-resolve edition-aware: fetch `GET /edition?bookId=...` for every matching
+   row, disambiguate duplicate pockets by usable requested-format editions, and
+   use authoritative local `format` to choose one Ebook or Audiobook edition
+   (with preferred language). Physical is not an audiobook fallback. A matching
+   row without a usable requested-format edition stops with an actionable error.
+9. Read the author. If the requested format's `*MonitorFuture` gate is false,
    set only that gate (plus the required top-level `monitored` field), then
    re-read the author to verify it.
-8. `PUT /book/monitor` with one ID: `{"bookIds":[id],"monitored":true}`.
-9. Re-read `/book/{id}` and verify the requested-format monitor state. If it did
-   not persist, stop and do not queue a search.
-10. `POST /command` once with `{"name":"BookSearch","bookIds":[id]}`.
-11. Treat retries as idempotent: re-read status first, never create duplicate
-    authors, and never queue multiple searches from one Discord interaction.
+10. Select the edition with the full-book `PUT /book/{id}`: complete book body,
+    `anyEditionOk: false`, and the full editions array carrying exactly one
+    edition with `monitored: true` and `manualAdd: true`.
+11. `PUT /book/monitor` with one ID: `{"bookIds":[id],"monitored":true}`.
+12. Re-read `/book/{id}` and `/edition?bookId=...` and verify all of: the row
+    still matches the selected work, top-level `monitored` is true, the explicit
+    requested-format monitor flag is true, and exactly one requested-format
+    edition - the chosen one - is monitored. These are AND conditions. If any
+    did not persist, stop and do not queue a search.
+13. `POST /command` once with `{"name":"BookSearch","bookIds":[id]}` and
+    require a valid command acknowledgement. Only then may the requester be
+    told the request was accepted; acceptance does not promise an indexer match.
+14. Treat retries as convergent with bounded deduplication. Re-read all matching
+    pockets; stop for an available file, grab, exact queued/started `BookSearch`,
+    or a recent valid acknowledgement retained by the same bot process. Repair a
+    partial edition or monitor state that lacks that evidence through steps
+    8-13. Never create duplicate authors or queue a second concurrent/immediate
+    search. A restart clears the in-process acknowledgement, and a completed
+    zero-result search has no grab or file; an explicit retry in either case may
+    intentionally queue a fresh search rather than block the request forever.
 
-The existing-author exact-work POST is based on the current Moonrock Helper
-integration and sanitized fixture shapes, not a write test against Chaptarr
-`0.9.720.0` performed for this release. The request uses an explicit allowlist
-and keeps all book and edition monitor flags false. It remains beta until a
-disposable-library write/read-back test proves that shape on a published
-Chaptarr build.
+The request uses an explicit allowlist and starts all book and edition monitor
+flags false. Every write-path change remains beta until the exact candidate
+image passes a disposable-library live canary covering new-author settle, clear
+multi-book rejection, edition selection, strict read-back, partial-state retry,
+and `BookSearch` acknowledgement. Sanitized fixtures and read-only evidence
+cannot prove that a private Chaptarr mutation still persists.
 
 Network calls need explicit connect and total-request timeouts. Polling needs a
 deadline and cancellation when the Discord interaction is no longer usable.
@@ -343,8 +427,10 @@ Compatibility is maintained as follows:
 - Before claiming support for a new release, run read-only lookup/detail,
   profile, root, and status probes; sanitize any new shapes; update these
   fixtures; and run contract tests.
-- A write-path change also requires a disposable or explicitly approved live
-  request test. Read-only evidence cannot prove a mutation still persists.
+- A write-path change also requires the exact candidate image to pass the
+  disposable live canary in `RELEASE_CHECKLIST.md`. Record its commit, image
+  digest, Chaptarr version, results, and rollback artifact. Read-only evidence
+  cannot prove a mutation still persists.
 - Never regenerate a broad Readarr client from an unrelated OpenAPI document.
   Chaptarr is Readarr-like, but its format-specific fields and monitor behavior
   are the reason this narrow contract exists.

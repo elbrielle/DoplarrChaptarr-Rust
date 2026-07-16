@@ -19,6 +19,8 @@ binary beta; releases remain gated by the disposable Chaptarr checklist below.
 
 Each backend creates a `/request <media>` slash command. Chaptarr adds the same
 two public commands as the old fork: `/request book` and `/request audiobook`.
+Each interaction requests one work. The bot does not expand a trilogy or series
+query into multiple books; select an individual title for each request.
 
 ## Screenshots
 
@@ -207,6 +209,30 @@ not add an author or book; Chaptarr is mutated only after the requester presses
 bounded Open Library fallback, but remain best-effort: a request must still work
 when a cover host is unavailable or a title has no usable image.
 
+A request only reports success after Chaptarr confirms it is actionable. For an
+author new to Chaptarr, the bot first waits for successful command checks, no
+catalog command in flight, and stable book and target-edition state. A polling
+error or deadline stops the request before any monitor/search work and tells the
+requester to retry later.
+
+The bot rejects results whose titles carry clear multi-book signals - for
+example, a title ending in `bundle` or `trilogy`, an `omnibus`, a box set, a
+`complete ... series`, or an explicit numbered book collection/set - and asks
+for an individual title. It does not reject a legitimate single-work title
+merely because it contains a word such as `collection` or `series`. For a
+single work, it chooses the best duplicate row, uses the
+authoritative edition `format` to keep Ebook, Physical, and Audiobook distinct,
+and selects exactly one requested-format edition. It then verifies both the
+book monitor and the explicit format monitor plus the chosen edition before
+queueing `BookSearch`.
+
+Retries use bounded deduplication. An exact queued/started `BookSearch`, a grab,
+an available file, or a recent valid acknowledgement retained by the same bot
+process stops an immediate duplicate. A partial edition/monitor state without
+that evidence is repaired. After the bot restarts, or after a search completes
+with no grab or file, an explicit retry may intentionally queue a fresh search
+so a zero-result request is not blocked forever.
+
 `openlibrary_covers` defaults to `true`. When enabled, a search whose Chaptarr
 results lack usable covers sends the search text to Open Library's public Search
 API. Results are cached and globally rate-limited. Set it to `false` on both
@@ -226,7 +252,9 @@ sequence are documented in
 **[docs/chaptarr/COMPATIBILITY.md](docs/chaptarr/COMPATIBILITY.md)**. Maintainers
 should complete the
 **[beta release checklist](docs/chaptarr/RELEASE_CHECKLIST.md)** before
-publishing against a new Chaptarr version.
+merging or publishing any Chaptarr write-path change. The checklist includes an
+exact-image disposable live write canary because fixture tests cannot prove
+that Chaptarr persisted a private-API mutation.
 
 ## Running as a Service
 
