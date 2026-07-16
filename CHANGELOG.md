@@ -2,6 +2,56 @@
 
 All notable changes to DoplarrChaptarr Rust are documented here.
 
+## 4.6.1-chaptarr.1 - Unreleased
+
+Fixes the new-author request failure observed live on 2026-07-15. The old bot
+accepted a Farseer collection row while Robin Hobb's catalog was still
+refreshing, monitored and searched that bundle too early, and still reported
+success when that `BookSearch` completed with zero results. It had not selected
+a usable ebook edition, and the import tail later removed the partial monitor
+state.
+
+### Fixed
+
+- New-author requests now wait for the catalog import to settle before any
+  monitoring. The gate requires successful command polling, no author-relevant
+  catalog command in flight, and stable book and target-edition state; an API
+  error or deadline fails closed. The same wait runs after any bot-issued
+  `RefreshAuthor`.
+- Requests now select exactly one edition of the requested format (preferring
+  English and the projected edition) via the full-book `PUT /book/{id}` with
+  `anyEditionOk: false` and `manualAdd`, mirroring the Chaptarr UI. Edition truth
+  is read exclusively from `GET /edition?bookId=...`; its authoritative
+  `format` distinguishes Ebook, Physical, and Audiobook so a physical edition
+  cannot be mistaken for an audiobook.
+- This remains a single-work request flow. Results with clear multi-book title
+  signals - such as a title ending in `bundle` or `trilogy`, an `omnibus`, a box
+  set, a `complete ... series`, or an explicit numbered book collection/set -
+  are rejected with an instruction to request each individual title. The bot
+  does not expand one selection into many works.
+- Duplicate import pockets (two local rows for one work, logged server-side as
+  `SERVER-BUG-CANDIDATE`) are disambiguated by which row actually carries
+  usable requested-format editions, and only that row is monitored.
+  Already-requested checks now span every matching row so an available or
+  in-flight twin stops a duplicate request. An exact active `BookSearch` and a
+  recent valid acknowledgement retained by the same bot process are also
+  deduplicated.
+- The pre-search read-back now verifies the book is monitored AND its explicit
+  requested-format flag is true, and that exactly one requested-format edition
+  - the chosen one - is monitored before `BookSearch` is queued. A matching
+  work with no usable edition fails with an actionable message.
+- Retries now distinguish an available, grabbed, actively searched, or
+  same-process recently acknowledged request from a partial monitor state. A
+  prior edition/monitor write without that search evidence is repaired through
+  the same verified sequence instead of being rejected as "already requested."
+  This deduplication is deliberately bounded: after a bot restart, or after a
+  search completes with no grab or file, an explicit retry may queue a fresh
+  search instead of leaving a zero-result request permanently blocked.
+
+This write-path change still requires the exact candidate image to pass the
+disposable live mutation checklist before merge or release; fixtures and CI
+cannot prove that private Chaptarr writes persist.
+
 ## 4.6.0-chaptarr.1 - Unreleased
 
 This is a beta release candidate. Chaptarr's API is private and pre-1.0, and

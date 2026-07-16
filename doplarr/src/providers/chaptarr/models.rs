@@ -73,10 +73,23 @@ pub(super) struct Image {
 #[derive(Debug, Clone, Default, Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub(super) struct Edition {
+    #[serde(default, deserialize_with = "null_default")]
+    pub(super) id: Value,
+    /// Chaptarr's authoritative edition discriminator (`ebook`, `audiobook`,
+    /// or `physical`). Older/projection responses may omit it, in which case
+    /// callers can fall back to `is_ebook` deliberately.
+    #[serde(default, deserialize_with = "null_default")]
+    pub(super) format: String,
     #[serde(default)]
     pub(super) is_ebook: Option<bool>,
     #[serde(default)]
     pub(super) isbn13: Option<String>,
+    #[serde(default)]
+    pub(super) asin: Option<String>,
+    #[serde(default, deserialize_with = "null_default")]
+    pub(super) language: String,
+    #[serde(default, deserialize_with = "null_default")]
+    pub(super) monitored: bool,
     #[serde(default, deserialize_with = "null_default")]
     pub(super) title: String,
     #[serde(default, deserialize_with = "null_default")]

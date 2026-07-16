@@ -1,0 +1,35 @@
+[
+  {
+    "id": 8101,
+    "bookId": 4101,
+    "title": "The Clockwork Orchard",
+    "foreignEditionId": "hc:edition-ebook",
+    "format": "ebook",
+    "isEbook": true,
+    "language": "eng",
+    "monitored": false,
+    "manualAdd": false
+  },
+  {
+    "id": 8102,
+    "bookId": 4101,
+    "title": "The Clockwork Orchard",
+    "foreignEditionId": "hc:edition-audiobook",
+    "format": "audiobook",
+    "isEbook": false,
+    "language": "eng",
+    "monitored": false,
+    "manualAdd": false
+  },
+  {
+    "id": 8103,
+    "bookId": 4101,
+    "title": "The Clockwork Orchard",
+    "foreignEditionId": "hc:edition-physical",
+    "format": "physical",
+    "isEbook": false,
+    "language": "eng",
+    "monitored": false,
+    "manualAdd": false
+  }
+]
