@@ -32,7 +32,10 @@ pub async fn api_leagues_search_get(
     config: &Configuration,
     query: &str,
 ) -> Result<Vec<models::CatalogLeague>, Error> {
-    let encoded: String = url::form_urlencoded::byte_serialize(query.as_bytes()).collect();
+    // Path-segment encoding: form encoding would turn spaces into `+`, which
+    // the server takes literally and multi-word searches silently miss.
+    let encoded =
+        percent_encoding::utf8_percent_encode(query, percent_encoding::NON_ALPHANUMERIC);
     execute(request(
         config,
         reqwest::Method::GET,

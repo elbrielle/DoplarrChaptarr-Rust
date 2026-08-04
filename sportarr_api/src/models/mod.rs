@@ -74,7 +74,11 @@ pub struct AddLeagueRequest {
 #[derive(Debug, Clone, Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub struct AddedLeague {
-    pub id: Option<i32>,
+    /// Sportarr answers `POST /api/leagues` with a confirmation envelope,
+    /// not the created entity: `{message, leagueId, monitored}`.
+    pub league_id: Option<i32>,
     #[serde(default)]
-    pub name: String,
+    pub message: String,
+    #[serde(default)]
+    pub monitored: bool,
 }
