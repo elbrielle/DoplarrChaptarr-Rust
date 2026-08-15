@@ -73,8 +73,8 @@ assert {
     )
     for backend in report["backends"]
 } == {
-    ("book", "Chaptarr", "0.9.720.0", "tested"),
-    ("audiobook", "Chaptarr", "0.9.720.0", "tested"),
+    ("book", "Chaptarr", "0.9.911.0", "tested"),
+    ("audiobook", "Chaptarr", "0.9.911.0", "tested"),
 }, report
 
 for forbidden in (
