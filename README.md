@@ -239,10 +239,10 @@ API. Results are cached and globally rate-limited. Set it to `false` on both
 backends if you do not want search text sent to that service.
 
 > [!WARNING]
-> Chaptarr's source and a stable public API specification are not currently
-> available. The initial integration contract is tested against captured,
-> sanitized Chaptarr `0.9.720.0` API responses, but an update can still change
-> the private API. Pin known
+> Chaptarr is now public, but its API remains pre-1.0 and can still change.
+> The integration contract and sanitized fixtures were revalidated against the
+> official `chaptarr/chaptarr:latest` image reporting Chaptarr `0.9.911.0`.
+> Pin known
 > working DoplarrChaptarr and Chaptarr versions, read release notes before
 > upgrading, and report the DoplarrChaptarr version, Chaptarr version, endpoint,
 > and sanitized response shape when filing a compatibility issue.

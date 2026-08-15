@@ -5,10 +5,11 @@ DoplarrChaptarr depends on. Chaptarr is still pre-1.0 and does not publish a
 machine-readable API contract, so the Rust client is handwritten, tolerant of
 additive fields, and tested against sanitized response fixtures.
 
-The compatibility baseline is Chaptarr `0.9.720.0`. The published container
-tag is [`robertlordhood/chaptarr:0.9.720`][chaptarr-tags]. The fixture shapes
-were derived from read-only inspection of that release on 2026-07-12, the
-previous DoplarrChaptarr implementation, and its recorded live-test findings.
+The compatibility baseline is Chaptarr `0.9.911.0`. The tested container is the
+official [`chaptarr/chaptarr:latest`][chaptarr-tags] image. The fixture shapes
+were revalidated through read-only inspection and local contract tests on
+2026-08-14 after the public-image migration. The owner-selected Discord
+mutation check remains a separate release gate.
 They are examples, not a promise that Chaptarr will never add or omit fields.
 
 The base URL is `<CHAPTARR_URL>/api/v1`. Send the API key in `X-Api-Key`; never
@@ -45,7 +46,7 @@ result.
 
 ### Lookup results
 
-`GET /book/lookup` returns an array. Chaptarr `0.9.720.0` can include:
+`GET /book/lookup` returns an array. Chaptarr `0.9.911.0` can include:
 
 - `id`, sometimes numeric and sometimes string-like in older or transitional
   responses. Only a positive integer means a local row; `0`, `"0"`, null, and
@@ -64,7 +65,7 @@ audiobook ID to satisfy an ebook request, or the reverse.
 
 The lookup row's `mediaType` and edition `isEbook` values describe the metadata
 projection Chaptarr returned; they do not prove that the work cannot be
-requested in the other format. Live `0.9.720.0` testing returned only
+requested in the other format. Live `0.9.911.0` testing returned only
 `audiobook` projections for generic queries initiated as ebook searches.
 Retain those work results, prefer a requested-format projection when the same
 foreign work appears more than once, and enforce format only when selecting a
@@ -88,7 +89,7 @@ the client uses Chaptarr's format/default flags, then conservative `ebook` or
 startup. A root explicitly marked `accessible: false` is never selectable. Do
 not expose a local root path in a Discord message or public issue report.
 
-Chaptarr `0.9.720.0` may return the root-folder keys `ebook` and `audiobook` as
+Chaptarr `0.9.911.0` may return the root-folder keys `ebook` and `audiobook` as
 nested settings objects on every root, rather than boolean format flags. Those
 objects are accepted for compatibility but never treated as discriminators;
 only an explicit boolean `true` may select a format. Exact configured paths are
@@ -96,7 +97,7 @@ therefore preferred, with conservative path/name inference as the fallback.
 
 ### Book rows
 
-Chaptarr `0.9.720.0` exposes row-oriented state:
+Chaptarr `0.9.911.0` exposes row-oriented state:
 
 - `id` and `authorId` identify the local row and parent author.
 - `mediaType` is `"ebook"` or `"audiobook"`.
@@ -124,7 +125,7 @@ For the requested format, status is evaluated in this order:
 4. **Unmonitored:** none of those conditions is true.
 
 Where per-format legacy fields exist, use only the pair belonging to the
-requested format. Prefer the row-oriented `0.9.720.0` fields when `mediaType`
+requested format. Prefer the row-oriented `0.9.911.0` fields when `mediaType`
 is present.
 
 ### Resolved rows and placeholders
@@ -146,8 +147,8 @@ metadata-profile filters and remove editions.
 
 ### Editions, duplicate pockets, and catalog settling
 
-The following behaviors were confirmed by hand against live Chaptarr
-`0.9.720.0` during the 2026-07-15 new-author incident repair. Each one can make
+The following behaviors were reconfirmed against live Chaptarr `0.9.911.0`
+during the 2026-08-14 public-image migration. Each one can make
 a naive request pipeline fail silently or appear to work:
 
 The incident was not a missing `BookSearch` call: the old path queued a search
@@ -386,11 +387,11 @@ private hostname appears in them.
 
 | Fixture | Evidence represented |
 | --- | --- |
-| `system_status.json` | Live `0.9.720.0` status discriminator |
+| `system_status.json` | Live `0.9.911.0` status discriminator |
 | `lookup.json` | Live lookup fields, local ebook/audiobook arrays, relative and absolute cover shapes; junk row added synthetically to preserve the legacy filter regression |
 | `openlibrary_search.json` | Official Search API `cover_i` shape with exact and non-matching title/author rows for cover-enrichment tests |
 | `author.json` | Fields used by live author resolution and the two monitor gates |
-| `book_available.json` | `0.9.720.0` row-oriented format/file/statistics shape |
+| `book_available.json` | `0.9.911.0` row-oriented format/file/statistics shape |
 | `book_processing.json` | Row-oriented monitored/grabbed state with no files |
 | `book_unmonitored.json` | Resolved row eligible for the monitor sequence |
 | `book_placeholder.json` | Legacy live-test placeholder invariant (`default-*`, no date, no images) |
@@ -414,7 +415,7 @@ Compatibility is maintained as follows:
 - Treat optional ranking, status, and cover fields as nullable and type-drifting
   where older responses have demonstrated number/string variation.
 - Require `appName: "Chaptarr"` and a non-empty live version at startup.
-  `0.9.720.x` is the tested baseline; a different non-empty version receives a
+  `0.9.911.x` is the tested baseline; a different non-empty version receives a
   clear untested-version warning.
 - Run the exact candidate image with `--check /config.toml` before Discord
   startup. The command must exercise status, root, quality-profile, and
@@ -440,7 +441,7 @@ the `MediaBackend` and `MediaItem` traits. Keeping Chaptarr behind that provider
 boundary makes this compatibility layer replaceable without forking Discord
 interaction machinery; see [Doplarr developer documentation][doplarr-dev].
 
-[chaptarr-tags]: https://hub.docker.com/r/robertlordhood/chaptarr/tags
+[chaptarr-tags]: https://hub.docker.com/r/chaptarr/chaptarr/tags
 [openlibrary-search]: https://openlibrary.org/dev/docs/api/search
 [openlibrary-covers]: https://openlibrary.org/dev/docs/api/covers
 [doplarr-dev]: https://github.com/activexray/doplarr_rs/blob/main/README_DEVELOPER.md

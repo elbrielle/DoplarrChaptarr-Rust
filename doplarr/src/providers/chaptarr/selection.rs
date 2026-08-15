@@ -7,10 +7,13 @@ use serde_json::Value;
 use std::{cmp::Reverse, collections::HashMap};
 use tracing::warn;
 
-const TESTED_CHAPTARR_VERSION: &str = "0.9.720";
+const TESTED_CHAPTARR_VERSION: &str = "0.9.911";
 
 pub(super) fn version_is_tested(version: &str) -> bool {
-    version.starts_with(TESTED_CHAPTARR_VERSION)
+    version == TESTED_CHAPTARR_VERSION
+        || version
+            .strip_prefix(TESTED_CHAPTARR_VERSION)
+            .is_some_and(|suffix| suffix.starts_with('.'))
 }
 
 pub(super) type CoverMap = HashMap<(String, String), String>;
@@ -965,6 +968,15 @@ mod tests {
             })
             .is_err()
         );
+    }
+
+    #[test]
+    fn only_the_live_validated_chaptarr_patch_line_is_tested() {
+        assert!(version_is_tested("0.9.911.0"));
+        assert!(version_is_tested("0.9.911.7"));
+        assert!(!version_is_tested("0.9.910.0"));
+        assert!(!version_is_tested("0.9.912.0"));
+        assert!(!version_is_tested("0.9.9110"));
     }
 
     #[test]

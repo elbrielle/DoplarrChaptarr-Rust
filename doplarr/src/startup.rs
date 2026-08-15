@@ -150,14 +150,14 @@ mod tests {
             backends: &[BackendCheck {
                 media: "book".into(),
                 provider: "Chaptarr",
-                version: Some("0.9.720.0".into()),
+                version: Some("0.9.911.0".into()),
                 compatibility: Some("tested"),
             }],
         };
 
         let json = serde_json::to_string(&report).unwrap();
         assert!(json.contains("not_contacted"));
-        assert!(json.contains("0.9.720.0"));
+        assert!(json.contains("0.9.911.0"));
         assert!(!json.contains("url"));
         assert!(!json.contains("api_key"));
         assert!(!json.contains("root"));
