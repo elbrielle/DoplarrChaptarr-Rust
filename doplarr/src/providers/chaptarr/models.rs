@@ -169,8 +169,6 @@ pub(super) struct BookShape {
     #[serde(default, deserialize_with = "null_default")]
     pub(super) has_files: bool,
     #[serde(default, deserialize_with = "null_default")]
-    pub(super) grabbed: bool,
-    #[serde(default, deserialize_with = "null_default")]
     pub(super) author: SearchAuthor,
     #[serde(default, deserialize_with = "null_default")]
     pub(super) images: Vec<Image>,
@@ -212,7 +210,6 @@ mod serializer_traps {
         }))
         .unwrap();
         assert!(book.editions.is_empty());
-        assert!(!book.grabbed);
         assert!(!book.monitored && !book.ebook_monitored && !book.audiobook_monitored);
         assert!(book.release_date.is_none());
         assert!(book.images.is_empty());
@@ -221,13 +218,12 @@ mod serializer_traps {
     }
 
     #[test]
-    fn a_grabbed_key_in_input_is_still_parsed_as_data_not_required() {
+    fn a_grabbed_key_in_input_is_ignored_data() {
         // `grabbed` is only ever emitted on the SignalR path
-        // (BookController.cs:1997); its absence from REST rows is the norm.
-        let with_key: BookShape = serde_json::from_value(json!({"grabbed": true})).unwrap();
-        let without_key: BookShape = serde_json::from_value(json!({})).unwrap();
-        assert!(with_key.grabbed);
-        assert!(!without_key.grabbed);
+        // (BookController.cs:1997); REST rows never carry it and the model
+        // deliberately has no field for it.
+        assert!(serde_json::from_value::<BookShape>(json!({"grabbed": true})).is_ok());
+        assert!(serde_json::from_value::<BookShape>(json!({})).is_ok());
     }
 
     #[test]

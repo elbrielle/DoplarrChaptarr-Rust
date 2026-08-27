@@ -881,9 +881,10 @@ impl Chaptarr {
 
     /// Monitoring is only a durable configuration flag; it does not prove a
     /// search was queued. Treat a no-file row as genuinely in flight only when
-    /// Chaptarr reports a grab or an active BookSearch for that exact pocket.
-    /// This lets a later Discord retry repair edition/monitor/search failures
-    /// without allowing two concurrent requests through the mutation lock.
+    /// an exact BookSearch is active for that pocket or our own in-process ack
+    /// cache remembers one. This lets a later Discord retry repair
+    /// edition/monitor/search failures without allowing two concurrent
+    /// requests through the mutation lock.
     async fn request_state_across(
         &self,
         rows: &[Value],
@@ -893,19 +894,9 @@ impl Chaptarr {
         if state == FormatState::Available {
             return Ok(FormatState::Available);
         }
-        let matching: Vec<_> = rows
+        let book_ids: Vec<_> = rows
             .iter()
             .filter(|row| local_row_matches_item(row, self.format, &item.book))
-            .collect();
-        if matching
-            .iter()
-            .filter_map(|row| serde_json::from_value::<BookShape>((*row).clone()).ok())
-            .any(|book| book.grabbed)
-        {
-            return Ok(FormatState::Processing);
-        }
-        let book_ids: Vec<_> = matching
-            .iter()
             .filter_map(|row| positive_id(row.get("id")))
             .collect();
         // A strict monitored state needs command evidence before it can block
@@ -931,7 +922,7 @@ impl Chaptarr {
         if book_search_command_active(&commands, &book_ids) {
             Ok(FormatState::Processing)
         } else {
-            // A monitored row with no file, grab, or matching search is a
+            // A monitored row with no file and no matching search is a
             // recoverable partial request, not proof of successful work.
             Ok(FormatState::Missing)
         }

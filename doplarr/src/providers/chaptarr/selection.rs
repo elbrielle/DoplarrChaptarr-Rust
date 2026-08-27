@@ -291,7 +291,7 @@ pub(super) fn format_state(value: &Value, format: ChaptarrFormat) -> FormatState
     let files = format_files.max(book.statistics.book_file_count);
     if files > 0 || book.has_files {
         FormatState::Available
-    } else if format_is_monitored(value, format) || book.grabbed {
+    } else if format_is_monitored(value, format) {
         FormatState::Processing
     } else {
         FormatState::Missing
@@ -307,7 +307,7 @@ fn format_state_rank(state: FormatState) -> u8 {
 }
 
 /// Chaptarr imports can leave duplicate local rows ("pockets") for the same
-/// work, and availability or an in-flight grab may live on either twin. The
+/// work, and availability or in-flight monitoring may live on either twin. The
 /// authoritative state for a request is therefore the strongest state across
 /// every local row that matches the selected work, never a single row.
 pub(super) fn format_state_across(
@@ -1051,6 +1051,24 @@ mod tests {
         assert!(book_identity_complete(&book));
         assert!(book.images.is_empty());
         assert_eq!(book.statistics.book_file_count, 0);
+    }
+
+    #[test]
+    fn a_signalr_grab_flag_never_creates_rest_processing_state() {
+        // `grabbed` is set only on the SignalR broadcast path
+        // (BookController.cs:1997) and is always false with WhenWritingDefault
+        // on the REST mapping (BookResource.cs:87-88,236), so it can never
+        // appear in - and must never influence - REST-derived state.
+        let row = json!({
+            "mediaType": "ebook",
+            "monitored": false,
+            "hasFiles": false,
+            "grabbed": true
+        });
+        assert_eq!(
+            format_state(&row, ChaptarrFormat::Ebook),
+            FormatState::Missing
+        );
     }
 
     #[test]
