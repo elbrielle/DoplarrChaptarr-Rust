@@ -584,9 +584,19 @@ Chaptarr is pre-1.0, so a patch-looking release can still change an API shape.
   prove a mutation still persists.
 - **Never codegen from `openapi.json`.** The spec is committed
   (`src/Chaptarr.Api.V1/openapi.json`) but mistypes `CommandResource.body` and
-  parameter optionality, so generated models would encode wrong contracts with
-  false confidence. It is useful as a route inventory only. The handwritten
-  narrow client — and this document — remain the contract.
+  parameter optionality and omits real controller 400s, so generated models
+  would encode wrong contracts with false confidence. It is useful as a route
+  inventory only. The handwritten narrow client — and this document — remain
+  the contract.
+- **Contract tests fail CI on drift.** `doplarr/tests/chaptarr_contract.rs`
+  asserts the 14 depended-on routes against a vendored extract of the spec's
+  paths (`doplarr/tests/fixtures/chaptarr/openapi_paths.json`) and sweeps
+  every Chaptarr fixture for serializer-trap violations (explicit nulls,
+  `id: 0`, `grabbed`, an `editions` key on `/book` rows, mistyped
+  `profileType`). Refresh the extract from a Chaptarr clone with one command:
+  `.github/ci/refresh-openapi-extract.sh /tmp/chaptarr-ref`. A depended-on
+  route vanishing from a new release is a contract event, not a
+  refresh-and-move-on event.
 
 Rust Doplarr's own developer guide supports adding a backend through the
 `MediaBackend` and `MediaItem` traits. Keeping Chaptarr behind that provider

@@ -19,6 +19,13 @@ state.
   paths) ANDed with quiet author-relevant commands, inside the same
   fail-closed deadline. The triple-fingerprint stability sampling is
   deleted, and a long-settled author passes the gate on the first look.
+- A contract-test layer fails CI when the narrow contract drifts: the 14
+  depended-on routes are asserted against a vendored `openapi.json` paths
+  extract (route inventory only - the spec's schemas are known-wrong), and
+  every Chaptarr fixture is swept for serializer-trap violations (explicit
+  nulls, `id: 0`, `grabbed`, `editions` on `/book` rows, mistyped
+  `profileType`). `.github/ci/refresh-openapi-extract.sh` refreshes the
+  extract in one command.
 - Root folders resolve by their real discriminators: `folderType`
   (1=Audiobook, 2=Ebook) decides typed roots, nested `ebook`/`audiobook`
   settings-object presence decides Mixed roots, and `isEffectiveDefault*`
