@@ -1602,7 +1602,7 @@ mod tests {
         let mut item = lookup_item();
         item.book.foreign_book_id.clear();
         assert!(validate_item(&item).is_err());
-        item.book.foreign_book_id = "hc:work-1001".into();
+        item.book.foreign_book_id = "gr:work-1001".into();
         item.book.author.foreign_author_id.clear();
         assert!(validate_item(&item).is_err());
     }
@@ -1763,7 +1763,7 @@ mod tests {
     async fn cross_format_projection_uses_only_the_requested_local_id_bridge() {
         let lookup = json!([{
             "title": "The Clockwork Orchard",
-            "foreignBookId": "hc:work-1001",
+            "foreignBookId": "gr:work-1001",
             "mediaType": "audiobook",
             "author": {
                 "authorName": "Mara Vale",
@@ -1793,7 +1793,7 @@ mod tests {
         let lookup = json!([
             {
                 "title": "The Clockwork Orchard",
-                "foreignBookId": "hc:work-1001",
+                "foreignBookId": "gr:work-1001",
                 "mediaType": "audiobook",
                 "author": {
                     "authorName": "Mara Vale",
@@ -1804,7 +1804,7 @@ mod tests {
             },
             {
                 "title": "The Clockwork Orchard",
-                "foreignBookId": "hc:work-1001",
+                "foreignBookId": "gr:work-1001",
                 "mediaType": "ebook",
                 "author": {
                     "authorName": "Mara Vale",
@@ -1843,7 +1843,7 @@ mod tests {
             "id": 5101,
             "authorId": 7001,
             "title": "The Clockwork Orchard",
-            "foreignBookId": "hc:work-1001",
+            "foreignBookId": "gr:work-1001",
             "mediaType": "audiobook",
             "monitored": false,
             "audiobookMonitored": false,
@@ -1856,7 +1856,7 @@ mod tests {
             "id": 5101,
             "authorId": 7001,
             "title": "The Clockwork Orchard",
-            "foreignBookId": "hc:work-1001",
+            "foreignBookId": "gr:work-1001",
             "mediaType": "audiobook",
             "monitored": true,
             "audiobookMonitored": true,
@@ -2056,7 +2056,7 @@ mod tests {
             "id": 4101,
             "authorId": 7001,
             "title": "The Clockwork Orchard",
-            "foreignBookId": "hc:work-1001",
+            "foreignBookId": "gr:work-1001",
             "mediaType": "ebook",
             "monitored": false,
             "ebookMonitored": false,
@@ -2080,7 +2080,7 @@ mod tests {
             "id": 4101,
             "authorId": 7001,
             "title": "The Clockwork Orchard",
-            "foreignBookId": "hc:work-1001",
+            "foreignBookId": "gr:work-1001",
             "mediaType": "ebook",
             "monitored": generic_monitored,
             "ebookMonitored": format_monitored,
@@ -2150,7 +2150,7 @@ mod tests {
             "id": 4101,
             "authorId": 7001,
             "title": "The Clockwork Orchard",
-            "foreignBookId": "hc:work-1001",
+            "foreignBookId": "gr:work-1001",
             "mediaType": "ebook",
             "monitored": true,
             "ebookMonitored": true,
@@ -2160,7 +2160,7 @@ mod tests {
             "id": 4101,
             "authorId": 7001,
             "title": "The Clockwork Orchard",
-            "foreignBookId": "hc:work-1001",
+            "foreignBookId": "gr:work-1001",
             "mediaType": "ebook",
             "monitored": false,
             "ebookMonitored": false,
@@ -2210,7 +2210,7 @@ mod tests {
             "id": 4101,
             "authorId": 7001,
             "title": "The Clockwork Orchard",
-            "foreignBookId": "hc:work-1001",
+            "foreignBookId": "gr:work-1001",
             "mediaType": "ebook",
             "monitored": false,
             "ebookMonitored": false,
@@ -2323,7 +2323,7 @@ mod tests {
             "id": 4101,
             "authorId": 7001,
             "title": "The Clockwork Orchard",
-            "foreignBookId": "hc:work-1001",
+            "foreignBookId": "gr:work-1001",
             "mediaType": "ebook",
             "monitored": false,
             "ebookMonitored": false,
@@ -2336,7 +2336,7 @@ mod tests {
             "id": 4101,
             "authorId": 7001,
             "title": "The Clockwork Orchard",
-            "foreignBookId": "hc:work-1001",
+            "foreignBookId": "gr:work-1001",
             "mediaType": "ebook",
             "monitored": true,
             "ebookMonitored": true,
@@ -2382,7 +2382,7 @@ mod tests {
                 "id": 9999,
                 "authorId": 7001,
                 "title": "The Clockwork Orchard",
-                "foreignBookId": "hc:work-other",
+                "foreignBookId": "gr:work-other",
                 "mediaType": "ebook",
                 "releaseDate": "2024-01-01",
                 "foreignEditionId": "hc:edition-other",
@@ -2438,7 +2438,7 @@ mod tests {
             .collect();
         assert_eq!(lines.len(), 31);
         assert_eq!(lines[10], "POST /api/v1/book HTTP/1.1");
-        assert!(recorded[10].contains("\"foreignBookId\":\"hc:work-1001\""));
+        assert!(recorded[10].contains("\"foreignBookId\":\"gr:work-1001\""));
         assert!(recorded[10].contains("\"monitored\":false"));
         assert!(recorded[10].contains("\"ebookMonitored\":false"));
         assert!(recorded[10].contains("\"audiobookMonitored\":false"));
@@ -2478,7 +2478,7 @@ mod tests {
             "id": 4101,
             "authorId": 7001,
             "title": "The Clockwork Orchard",
-            "foreignBookId": "hc:work-1001",
+            "foreignBookId": "gr:work-1001",
             "mediaType": "ebook",
             "monitored": false,
             "ebookMonitored": false,
@@ -2491,7 +2491,7 @@ mod tests {
             "id": 4101,
             "authorId": 7001,
             "title": "The Clockwork Orchard",
-            "foreignBookId": "hc:work-1001",
+            "foreignBookId": "gr:work-1001",
             "mediaType": "ebook",
             "monitored": true,
             "ebookMonitored": true,
@@ -2671,7 +2671,7 @@ mod tests {
             "id": 4101,
             "authorId": 7001,
             "title": "The Clockwork Orchard",
-            "foreignBookId": "hc:work-1001",
+            "foreignBookId": "gr:work-1001",
             "mediaType": "ebook",
             "monitored": false,
             "ebookMonitored": false,
@@ -2684,7 +2684,7 @@ mod tests {
             "id": 4101,
             "authorId": 7001,
             "title": "The Clockwork Orchard",
-            "foreignBookId": "hc:work-1001",
+            "foreignBookId": "gr:work-1001",
             "mediaType": "ebook",
             "monitored": true,
             "ebookMonitored": true,

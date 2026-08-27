@@ -1,47 +1,57 @@
 [
   {
-    "id": 0,
     "title": "The Clockwork Orchard",
     "titleSlug": "the-clockwork-orchard-mara-vale",
-    "foreignBookId": "hc:work-1001",
-    "releaseDate": "2024-05-14T00:00:00Z",
+    "foreignBookId": "gr:work-1001",
+    "foreignEditionId": "gr:edition-3001",
     "overview": "A quiet story about rebuilding a mechanical orchard.",
+    "mediaType": "audiobook",
+    "monitored": false,
+    "ebookMonitored": false,
+    "audiobookMonitored": false,
+    "hasFiles": false,
     "remoteCover": "/MediaCoverProxy/lookup/clockwork-orchard.jpg",
     "images": [
       {
         "coverType": "cover",
-        "url": "/MediaCoverProxy/lookup/clockwork-orchard.jpg"
+        "url": "/MediaCoverProxy/lookup/clockwork-orchard.jpg",
+        "remoteUrl": "https://covers.example.test/clockwork-orchard.jpg"
       }
     ],
+    "ratings": {
+      "popularity": 87.5,
+      "votes": 240
+    },
     "author": {
-      "id": 0,
       "authorName": "Mara Vale",
-      "foreignAuthorId": "hc:author-2001"
+      "foreignAuthorId": "gr:author-2001"
     },
     "editions": [
       {
         "title": "The Clockwork Orchard",
-        "foreignEditionId": "hc:edition-3001",
-        "isEbook": true,
-        "isbn13": "9780000000002",
+        "titleSlug": "the-clockwork-orchard",
+        "foreignEditionId": "gr:edition-3001",
+        "overview": "A quiet story about rebuilding a mechanical orchard.",
+        "monitored": true,
+        "manualAdd": false,
+        "isEbook": false,
+        "asins": [],
+        "ratings": {
+          "popularity": 87.5,
+          "votes": 240
+        },
         "images": [
           {
             "coverType": "cover",
-            "url": "https://covers.example.test/clockwork-orchard-ebook.jpg"
+            "url": "/MediaCoverProxy/lookup/clockwork-orchard.jpg",
+            "remoteUrl": "https://covers.example.test/clockwork-orchard.jpg"
           }
         ]
-      },
-      {
-        "title": "The Clockwork Orchard",
-        "foreignEditionId": "az:ZZ00000001",
-        "isEbook": false,
-        "asin": "ZZ00000001",
-        "images": []
       }
     ],
     "localEbookBooks": [
       {
-        "id": "4101"
+        "id": 4101
       }
     ],
     "localAudiobookBooks": [
@@ -51,39 +61,64 @@
     ]
   },
   {
-    "id": "0",
     "title": "The Glass Harbor",
     "titleSlug": "the-glass-harbor-iona-reed",
     "foreignBookId": "gr:work-1002",
-    "releaseDate": "2022-09-03T00:00:00Z",
+    "foreignEditionId": "gr:edition-1002",
     "overview": "A cartographer returns to an island that should not exist.",
-    "images": [
-      {
-        "coverType": "cover",
-        "url": "https://images.example.test/glass-harbor.jpg"
-      }
-    ],
+    "mediaType": "audiobook",
+    "monitored": false,
+    "ebookMonitored": false,
+    "audiobookMonitored": false,
+    "hasFiles": false,
+    "remoteCover": "",
+    "images": [],
     "author": {
-      "id": "0",
       "authorName": "Iona Reed",
       "foreignAuthorId": "gr:author-2002"
     },
-    "editions": [],
+    "editions": [
+      {
+        "title": "The Glass Harbor",
+        "titleSlug": "the-glass-harbor",
+        "foreignEditionId": "gr:edition-1002",
+        "monitored": true,
+        "manualAdd": false,
+        "isEbook": false,
+        "asins": [],
+        "images": []
+      }
+    ],
     "localEbookBooks": [],
     "localAudiobookBooks": []
   },
   {
-    "id": 0,
     "title": "The Clockwork Orchard: Summary and Analysis",
     "foreignBookId": "gr:junk-9001",
+    "foreignEditionId": "gr:edition-9001",
     "overview": "An unofficial study guide.",
+    "mediaType": "audiobook",
+    "monitored": false,
+    "ebookMonitored": false,
+    "audiobookMonitored": false,
+    "hasFiles": false,
+    "remoteCover": "",
     "images": [],
     "author": {
-      "id": 0,
       "authorName": "Quick Notes Press",
       "foreignAuthorId": "gr:author-9001"
     },
-    "editions": [],
+    "editions": [
+      {
+        "title": "The Clockwork Orchard: Summary and Analysis",
+        "foreignEditionId": "gr:edition-9001",
+        "monitored": true,
+        "manualAdd": false,
+        "isEbook": false,
+        "asins": [],
+        "images": []
+      }
+    ],
     "localEbookBooks": [],
     "localAudiobookBooks": []
   }

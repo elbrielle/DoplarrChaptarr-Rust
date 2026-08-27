@@ -64,6 +64,9 @@ pub(super) struct SearchAuthor {
     pub(super) foreign_author_id: String,
 }
 
+/// `url` is always rewritten to a relative proxied path
+/// (`MediaCoverService.cs:405-414` registers `/MediaCoverProxy/...`); the
+/// absolute upstream URL survives only on `remoteUrl` (`MediaCover.cs`).
 #[derive(Debug, Clone, Default, Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub(super) struct Image {
@@ -71,6 +74,8 @@ pub(super) struct Image {
     pub(super) url: String,
     #[serde(default, deserialize_with = "null_default")]
     pub(super) cover_type: String,
+    #[serde(default, deserialize_with = "null_default")]
+    pub(super) remote_url: String,
 }
 
 #[derive(Debug, Clone, Default, Deserialize)]

@@ -194,10 +194,11 @@ pub(super) fn open_library_work_search(book: &BookShape) -> String {
     url.into()
 }
 
+/// Chaptarr ids are integers, omitted entirely when 0 and never strings or
+/// null (`RestResource.cs:7-8`). Anything else fails closed.
 pub(super) fn positive_id(value: Option<&Value>) -> Option<i64> {
     match value {
         Some(Value::Number(n)) => n.as_i64().filter(|id| *id > 0),
-        Some(Value::String(s)) => s.parse::<i64>().ok().filter(|id| *id > 0),
         _ => None,
     }
 }
@@ -632,6 +633,11 @@ pub(super) fn needs_author_refresh(book: Option<&Value>) -> bool {
     book.is_some_and(|row| !book_complete(row))
 }
 
+/// Discord needs an absolute URL. Chaptarr rewrites every `images[].url` to a
+/// relative proxied path and aliases `remoteCover` to that same rewritten URL
+/// whenever a monitored edition exists (`BookResource.cs:229-250` shares the
+/// `MediaCover` objects that `ConvertToLocalUrls` mutates), so the upstream
+/// absolute URL must be read from `images[].remoteUrl` first.
 pub(super) fn absolute_cover(book: &BookShape, format: ChaptarrFormat) -> Option<String> {
     book.images
         .iter()
@@ -643,7 +649,7 @@ pub(super) fn absolute_cover(book: &BookShape, format: ChaptarrFormat) -> Option
                 .filter(|edition| edition_projection_compatible(edition, format))
                 .flat_map(|edition| edition.images.iter()),
         )
-        .map(|i| i.url.as_str())
+        .flat_map(|i| [i.url.as_str(), i.remote_url.as_str()])
         .chain(std::iter::once(book.remote_cover.as_str()))
         .find(|url| url.starts_with("https://"))
         .map(str::to_owned)
@@ -841,10 +847,13 @@ mod tests {
     }
 
     #[test]
-    fn positive_ids_reject_placeholders() {
-        assert_eq!(positive_id(Some(&json!("42"))), Some(42));
+    fn positive_ids_are_numeric_and_fail_closed_on_anything_else() {
+        assert_eq!(positive_id(Some(&json!(42))), Some(42));
         assert_eq!(positive_id(Some(&json!(0))), None);
-        assert_eq!(positive_id(Some(&json!("0"))), None);
+        // Ids are never strings on the wire (RestResource.cs:7-8); a string
+        // id is malformed data, not an identity.
+        assert_eq!(positive_id(Some(&json!("42"))), None);
+        assert_eq!(positive_id(None), None);
     }
 
     #[test]
@@ -864,9 +873,11 @@ mod tests {
                 .find_map(|row| positive_id(Some(&row.id))),
             Some(5101)
         );
+        // Both images[].url and remoteCover are relative proxied paths on the
+        // live serializer; the upstream absolute URL lives in images[].remoteUrl.
         assert_eq!(
             absolute_cover(&book, ChaptarrFormat::Ebook).as_deref(),
-            Some("https://covers.example.test/clockwork-orchard-ebook.jpg")
+            Some("https://covers.example.test/clockwork-orchard.jpg")
         );
         let junk: BookShape = serde_json::from_value(rows[2].clone()).unwrap();
         assert!(junk_title(&junk.title));
@@ -879,8 +890,11 @@ mod tests {
         assert_eq!(search_format_affinity(&book, ChaptarrFormat::Ebook), 0);
         assert_eq!(search_format_affinity(&book, ChaptarrFormat::Audiobook), 3);
 
+        // Free-text editions carry a hardwired isEbook:false and no other
+        // discriminator (BookInfoProxy.cs:3794-3810), so with mediaType absent
+        // the edition data can only ever suggest an audiobook affinity.
         book.media_type.clear();
-        assert_eq!(search_format_affinity(&book, ChaptarrFormat::Ebook), 2);
+        assert_eq!(search_format_affinity(&book, ChaptarrFormat::Ebook), 0);
         assert_eq!(search_format_affinity(&book, ChaptarrFormat::Audiobook), 2);
     }
 
