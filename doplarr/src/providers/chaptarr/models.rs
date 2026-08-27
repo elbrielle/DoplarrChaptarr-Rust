@@ -186,6 +186,94 @@ pub(super) struct BookShape {
     pub(super) ratings: Ratings,
 }
 
+/// Serializer traps: 0.9.936 omits null properties (`STJson.cs:27`),
+/// `id: 0` (`RestResource.cs:7-8`), `grabbed: false`
+/// (`BookResource.cs:87-88,236`), the `editions` key on every `/book`
+/// response (`BookResource.cs:137-259` never assigns it), nullable
+/// `readingFormatId`, and unconfigured nested root settings
+/// (`RootFolderResource.cs:399-400`). Every model must deserialize those
+/// key-absent shapes without error.
+#[cfg(test)]
+mod serializer_traps {
+    use super::*;
+    use serde_json::json;
+
+    #[test]
+    fn book_rows_tolerate_absent_id_grabbed_editions_and_monitor_gates() {
+        let book: BookShape = serde_json::from_value(json!({
+            "title": "Sparse Row",
+            "foreignBookId": "gr:work-1",
+            "mediaType": "ebook",
+            "author": {"authorName": "Mara Vale", "foreignAuthorId": "gr:author-1"}
+        }))
+        .unwrap();
+        assert!(book.editions.is_empty());
+        assert!(!book.grabbed);
+        assert!(!book.monitored && !book.ebook_monitored && !book.audiobook_monitored);
+        assert!(book.release_date.is_none());
+        assert!(book.images.is_empty());
+        assert!(book.local_ebook_books.is_empty());
+        assert_eq!(book.statistics.book_file_count, 0);
+    }
+
+    #[test]
+    fn a_grabbed_key_in_input_is_still_parsed_as_data_not_required() {
+        // `grabbed` is only ever emitted on the SignalR path
+        // (BookController.cs:1997); its absence from REST rows is the norm.
+        let with_key: BookShape = serde_json::from_value(json!({"grabbed": true})).unwrap();
+        let without_key: BookShape = serde_json::from_value(json!({})).unwrap();
+        assert!(with_key.grabbed);
+        assert!(!without_key.grabbed);
+    }
+
+    #[test]
+    fn editions_tolerate_absent_id_format_identity_and_flags() {
+        let edition: Edition = serde_json::from_value(json!({
+            "title": "Untyped projection"
+        }))
+        .unwrap();
+        assert!(edition.format.is_empty());
+        assert!(edition.is_ebook.is_none());
+        assert!(edition.isbn13.is_none() && edition.asin.is_none());
+        assert!(!edition.monitored);
+        assert!(edition.foreign_edition_id.is_empty());
+        let empty: Edition = serde_json::from_value(json!({})).unwrap();
+        assert!(empty.title.is_empty());
+    }
+
+    #[test]
+    fn root_folders_tolerate_absent_or_object_valued_nested_settings() {
+        let bare: RootFolder = serde_json::from_value(json!({
+            "path": "/library/ebooks"
+        }))
+        .unwrap();
+        assert!(bare.accessible);
+        assert!(!bare.ebook && !bare.audiobook);
+
+        let configured: RootFolder = serde_json::from_value(json!({
+            "path": "/library/ebooks",
+            "folderType": 2,
+            "ebook": {"writeAudioBookShelfMetadataJson": false, "tags": []}
+        }))
+        .unwrap();
+        assert!(
+            !configured.ebook,
+            "a settings object is not the legacy bool flag"
+        );
+    }
+
+    #[test]
+    fn lookup_rows_tolerate_absent_local_book_ids() {
+        let book: BookShape = serde_json::from_value(json!({
+            "localEbookBooks": [{}],
+            "localAudiobookBooks": [{"id": 5101}]
+        }))
+        .unwrap();
+        assert!(book.local_ebook_books[0].id.is_null());
+        assert_eq!(book.local_audiobook_books[0].id, json!(5101));
+    }
+}
+
 #[derive(Debug, Default, Deserialize)]
 pub(super) struct OpenLibraryResponse {
     #[serde(default, deserialize_with = "null_default")]

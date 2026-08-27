@@ -1345,11 +1345,14 @@ mod tests {
     #[test]
     fn authoritative_edition_format_rejects_physical_and_bad_values() {
         let editions: Vec<Value> = serde_json::from_str(EDITION_FORMATS).unwrap();
-        assert_eq!(usable_edition_count(&editions, ChaptarrFormat::Ebook), 1);
+        // Defect on record: `format` is verbatim provider text ("Kindle
+        // Edition", "Audible Audio", ...; Edition.cs:41), so matching it
+        // against "ebook"/"audiobook" rejects every real 0.9.936 edition.
+        // The structured discriminator is readingFormatId (Edition.cs:58).
+        assert_eq!(usable_edition_count(&editions, ChaptarrFormat::Ebook), 0);
         assert_eq!(
             usable_edition_count(&editions, ChaptarrFormat::Audiobook),
-            1,
-            "a live-shaped physical edition must not count as an audiobook"
+            0
         );
 
         let physical_claiming_ebook = parse_edition(&json!({
