@@ -60,16 +60,25 @@ Run each case once and inspect Chaptarr after every step:
    and book monitored but no confirmed `BookSearch`, then repeat the request.
 8. Inject or simulate a failed command poll during new-author settling and
    verify the request fails closed before edition, monitor, or search writes.
-9. Complete a search with zero results and no grab/file, or restart the bot after
+9. Complete a search with zero results and no file, or restart the bot after
    its recent acknowledgement is lost, then explicitly retry; verify at most one
    fresh search is queued by that new attempt.
+10. Request a work whose row has sparse upstream metadata (no release date, no
+    images); verify it resolves, monitors, verifies, and searches normally.
+11. If reproducible, trigger a `202` pending add (upstream metadata not yet
+    published) and a `409` ambiguous provider identity; verify the bot reports
+    the retry-later / conflict message and made no further mutation.
 
 For every case, verify:
 
 - the selected title, author, `foreignBookId` when present and `mediaType` match;
+- a lookup that returned a `gr:` work id still resolved the correct local row
+  even if the server had normalized that row's primary id to `hc:` (the known
+  identity-drift hazard from `docs/API_IDENTITY_AND_LIFECYCLE.md`);
 - no sibling work or unrequested edition was monitored;
-- authoritative edition `format` matches the requested format, and a Physical
-  edition is never selected for an audiobook request;
+- the monitored edition's `readingFormatId` matches the requested format
+  (2=audio, 3=ebook); a physical edition (`readingFormatId: 1`) is never
+  selected for either format, whatever its provider `format` text says;
 - the unrequested format's author gate did not change;
 - top-level book monitoring AND the explicit requested-format monitor flag were
   both read back true;
@@ -82,9 +91,31 @@ For every case, verify:
   queue one fresh search and does not queue more than one for that attempt;
 - settle polling errors/timeouts produced a clear failure and no downstream
   mutation;
-- a missing exact row did not queue `RefreshAuthor`;
-- an exact unresolved placeholder may queue at most one `RefreshAuthor`, and a
-  still-unresolved row never reaches `BookSearch`.
+- no code path queued `RefreshAuthor` at any point;
+- a sparse-metadata row was treated as ordinary requestable data, never as an
+  "unresolved placeholder".
+
+## Sprint 1 write-path changes to prove live
+
+The 0.9.936 rebaseline (Sprint 1: Truth & Correctness) changed these
+write-path behaviors; the next canary must exercise each one explicitly:
+
+- Edition selection, usability, and read-back verification discriminate by
+  `readingFormatId` (with `isEbook: true` as the ebook-only fallback) instead
+  of matching the free-text `format`.
+- The add-body edition payloads now carry `readingFormatId` alongside the
+  display `format`/`isEbook` fields.
+- The completeness gate (releaseDate/images/`default-` id) is gone: sparse
+  rows flow through selection, monitoring, and search.
+- The bot never issues `RefreshAuthor`; the only commands it posts are
+  `BookSearch`.
+- `grabbed` no longer participates in already-requested detection; dedup rests
+  on files, an exact active `BookSearch`, and the in-process ack cache.
+- `POST /book` `202` and `409` responses stop the flow with user-facing
+  messages instead of continuing into settle/poll.
+
+Nothing in this sprint graduates the write path out of beta; that requires
+this checklist's mutation proof against a disposable 0.9.936 instance.
 
 ## Promotion record
 
