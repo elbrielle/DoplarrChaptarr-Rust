@@ -68,6 +68,11 @@ Run each case once and inspect Chaptarr after every step:
 11. If reproducible, trigger a `202` pending add (upstream metadata not yet
     published) and a `409` ambiguous provider identity; verify the bot reports
     the retry-later / conflict message and made no further mutation.
+12. Probe `POST /book/{id}/editions/wanted` once on a disposable audiobook
+    row (decision record `docs/chaptarr/decisions/0001-wanted-editions.md`):
+    confirm it rejects ebook rows, never changes the author's monitor gates,
+    and that with the gate closed its `searchForNewBook` search is filtered
+    out while an explicit `POST /command BookSearch` is not.
 
 For every case, verify:
 

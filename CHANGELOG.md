@@ -19,6 +19,10 @@ state.
   paths) ANDed with quiet author-relevant commands, inside the same
   fail-closed deadline. The triple-fingerprint stability sampling is
   deleted, and a long-settled author passes the gate on the first look.
+- Decision record `docs/chaptarr/decisions/0001-wanted-editions.md` records
+  why `POST /book/{id}/editions/wanted` is not adopted (audiobook-only,
+  add-incapable, gate-blind, swallowed re-pin, droppable non-manual search
+  trigger); the release canary gains a one-time live probe of it.
 - A contract-test layer fails CI when the narrow contract drifts: the 14
   depended-on routes are asserted against a vendored `openapi.json` paths
   extract (route inventory only - the spec's schemas are known-wrong), and
