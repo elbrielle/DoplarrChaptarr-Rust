@@ -3,18 +3,55 @@
     "id": 31,
     "name": "Ebooks",
     "path": "/library/ebooks",
-    "accessible": true
+    "accessible": true,
+    "folderType": 2,
+    "ebook": {
+      "writeAudioBookShelfMetadataJson": false,
+      "writeAudioBookShelfCover": false,
+      "tags": []
+    },
+    "ebookQualityProfileId": 11,
+    "ebookMetadataProfileId": 21,
+    "isEffectiveDefaultEbook": false,
+    "isEffectiveDefaultAudiobook": false
   },
   {
     "id": 32,
     "name": "Audiobooks",
     "path": "/library/audiobooks",
-    "accessible": true
+    "accessible": true,
+    "folderType": 1,
+    "audiobook": {
+      "writeAudioBookShelfMetadataJson": false,
+      "writeAudioBookShelfCover": false,
+      "tags": []
+    },
+    "audiobookQualityProfileId": 12,
+    "audiobookMetadataProfileId": 22,
+    "isEffectiveDefaultEbook": false,
+    "isEffectiveDefaultAudiobook": false
   },
   {
     "id": 39,
     "name": "Offline Archive",
     "path": "/library/offline",
-    "accessible": false
+    "accessible": false,
+    "folderType": 0,
+    "ebook": {
+      "writeAudioBookShelfMetadataJson": false,
+      "writeAudioBookShelfCover": false,
+      "tags": []
+    },
+    "audiobook": {
+      "writeAudioBookShelfMetadataJson": false,
+      "writeAudioBookShelfCover": false,
+      "tags": []
+    },
+    "ebookQualityProfileId": 11,
+    "ebookMetadataProfileId": 21,
+    "audiobookQualityProfileId": 12,
+    "audiobookMetadataProfileId": 22,
+    "isEffectiveDefaultEbook": false,
+    "isEffectiveDefaultAudiobook": false
   }
 ]

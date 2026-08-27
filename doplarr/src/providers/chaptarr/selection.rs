@@ -913,7 +913,7 @@ mod tests {
     }
 
     #[test]
-    fn nested_root_settings_are_not_format_flags() {
+    fn nested_root_settings_objects_never_populate_the_legacy_bool_flags() {
         let roots: Vec<RootFolder> = serde_json::from_str(LIVE_ROOTS).unwrap();
         assert!(roots.iter().all(|root| !root.ebook && !root.audiobook));
         assert_eq!(

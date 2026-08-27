@@ -4,16 +4,14 @@
     "name": "Audiobooks",
     "path": "/library/audiobooks",
     "accessible": true,
-    "ebook": {
-      "writeAudioBookShelfMetadataJson": false,
-      "writeAudioBookShelfCover": false,
-      "tags": []
-    },
+    "folderType": 1,
     "audiobook": {
       "writeAudioBookShelfMetadataJson": false,
       "writeAudioBookShelfCover": false,
       "tags": []
     },
+    "audiobookQualityProfileId": 12,
+    "audiobookMetadataProfileId": 22,
     "isEffectiveDefaultEbook": false,
     "isEffectiveDefaultAudiobook": false
   },
@@ -22,16 +20,14 @@
     "name": "Ebooks",
     "path": "/library/ebooks",
     "accessible": true,
+    "folderType": 2,
     "ebook": {
       "writeAudioBookShelfMetadataJson": false,
       "writeAudioBookShelfCover": false,
       "tags": []
     },
-    "audiobook": {
-      "writeAudioBookShelfMetadataJson": false,
-      "writeAudioBookShelfCover": false,
-      "tags": []
-    },
+    "ebookQualityProfileId": 11,
+    "ebookMetadataProfileId": 21,
     "isEffectiveDefaultEbook": false,
     "isEffectiveDefaultAudiobook": false
   }

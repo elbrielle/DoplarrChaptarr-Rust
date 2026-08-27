@@ -11,9 +11,12 @@ where
     Option::<T>::deserialize(deserializer).map(Option::unwrap_or_default)
 }
 
-/// Chaptarr has exposed the root-folder `ebook` and `audiobook` keys as both
-/// booleans and nested settings objects. Only an explicit `true` is a format
-/// discriminator; an object exists on both root types and must not select one.
+/// On 0.9.936 the root-folder `ebook`/`audiobook` keys are nested settings
+/// objects, present only when the root is configured for that format
+/// (`RootFolderResource.cs:46-47,399-400`); pre-0.9.936 payloads used plain
+/// booleans. Only a literal `true` sets this legacy flag — object presence is
+/// not yet consumed for resolution, which still keys on explicit flags,
+/// effective defaults, and name inference.
 fn bool_only<'de, D>(deserializer: D) -> Result<bool, D::Error>
 where
     D: serde::Deserializer<'de>,
