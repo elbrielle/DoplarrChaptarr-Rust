@@ -1498,7 +1498,7 @@ mod tests {
             client: reqwest::Client::new(),
             base_url: "http://chaptarr.test/api/v1".into(),
             api_key: "test-only".into(),
-            server_version: "0.9.720.0".into(),
+            server_version: "0.9.936.0".into(),
             format,
             openlibrary_covers: false,
             settle: SettlePacing {

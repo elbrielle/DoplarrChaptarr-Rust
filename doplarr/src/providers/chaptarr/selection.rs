@@ -7,7 +7,7 @@ use serde_json::Value;
 use std::{cmp::Reverse, collections::HashMap};
 use tracing::warn;
 
-const TESTED_CHAPTARR_VERSION: &str = "0.9.720";
+const TESTED_CHAPTARR_VERSION: &str = "0.9.936";
 
 pub(super) fn version_is_tested(version: &str) -> bool {
     version.starts_with(TESTED_CHAPTARR_VERSION)
@@ -969,6 +969,10 @@ mod tests {
         let status: SystemStatus = serde_json::from_str(STATUS).unwrap();
         assert_eq!(status.app_name, "Chaptarr");
         assert!(status.version.starts_with(TESTED_CHAPTARR_VERSION));
+        // Only the 0.9.936 line is tested; anything else keeps warning.
+        assert!(version_is_tested("0.9.936.0"));
+        assert!(!version_is_tested("0.9.720.0"));
+        assert!(!version_is_tested("0.9.999.0"));
         validate_system_status(&status).unwrap();
         assert!(validate_system_status(&SystemStatus::default()).is_err());
         assert!(
