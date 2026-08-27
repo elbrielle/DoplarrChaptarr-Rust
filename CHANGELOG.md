@@ -45,6 +45,12 @@ folklore; `docs/chaptarr/COMPATIBILITY.md` v2 carries the citations.
 - Discord embed covers are read from `images[].remoteUrl`; on 0.9.936 both
   `images[].url` and `remoteCover` are relative proxied paths on lookup
   results, so without this no free-text result had an absolute cover.
+- `POST /book` responses are branched on their three real shapes: a `202`
+  `PendingBookRequestResource` stops with "Chaptarr queued this work upstream
+  - try the request again in a few minutes", a `409`
+  `ProviderAmbiguityResource` stops with a message naming the conflicting
+  candidates, and a `201` remains an acknowledgement whose identity the bot
+  re-resolves itself.
 
 ### Fixed
 

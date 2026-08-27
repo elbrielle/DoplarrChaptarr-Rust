@@ -269,6 +269,79 @@ impl Chaptarr {
         self.decode_value(response, endpoint).await
     }
 
+    /// `POST /book` has three response shapes (`BookController.cs:1175-1384`):
+    /// `201` with a full book resource; `202` with
+    /// `PendingBookRequestResource {pendingId, message}` when the upstream
+    /// metadata provider has not published the work yet; and a `409`
+    /// `ProviderAmbiguityResource` naming the conflicting candidates. The 202
+    /// meaning is specific to this route (`PUT /book/monitor` also answers
+    /// 202, as ordinary success), so only the add path interprets it.
+    async fn add_book(&self, title: &str, body: &Value) -> Result<Value> {
+        let bytes = serde_json::to_vec(body)?;
+        let response = self
+            .client
+            .request(Method::POST, format!("{}/book", self.base_url))
+            .header("X-Api-Key", &self.api_key)
+            .header("Content-Type", "application/json")
+            .body(bytes)
+            .send()
+            .await
+            .context("Could not reach Chaptarr endpoint /book")?;
+        match response.status() {
+            StatusCode::ACCEPTED => {
+                let pending = self.decode_value(response, "/book").await?;
+                info!(
+                    pending_id = ?positive_id(pending.get("pendingId")),
+                    detail = %string_at(&pending, "message"),
+                    "Chaptarr queued the add upstream"
+                );
+                bail!(UserFacingError(format!(
+                    "Chaptarr queued {title} with its upstream metadata provider, so nothing was monitored or searched yet. Try the request again in a few minutes."
+                )));
+            }
+            StatusCode::CONFLICT => {
+                let bytes = response.bytes().await?;
+                let ambiguity = serde_json::from_slice::<Value>(&bytes).unwrap_or(Value::Null);
+                let candidates = ambiguity
+                    .get("candidates")
+                    .and_then(Value::as_array)
+                    .map(|candidates| {
+                        candidates
+                            .iter()
+                            .map(|candidate| {
+                                let title = string_at(candidate, "title");
+                                let author = string_at(candidate, "authorName");
+                                if author.is_empty() {
+                                    title.to_string()
+                                } else {
+                                    format!("{title} by {author}")
+                                }
+                            })
+                            .filter(|name| !name.trim().is_empty())
+                            .take(3)
+                            .collect::<Vec<_>>()
+                            .join(", ")
+                    })
+                    .unwrap_or_default();
+                warn!(
+                    provider_id = %string_at(&ambiguity, "providerId"),
+                    detail = %string_at(&ambiguity, "message"),
+                    %candidates,
+                    "Chaptarr reported an ambiguous provider identity"
+                );
+                let conflict = if candidates.is_empty() {
+                    string_at(&ambiguity, "providerId").to_string()
+                } else {
+                    candidates
+                };
+                bail!(UserFacingError(format!(
+                    "Chaptarr could not add {title}: its provider identity is ambiguous ({conflict}). Resolve the conflict in Chaptarr, then request it again."
+                )));
+            }
+            _ => self.decode_value(response, "/book").await,
+        }
+    }
+
     async fn decode<T: serde::de::DeserializeOwned>(
         &self,
         response: reqwest::Response,
@@ -1227,7 +1300,7 @@ impl MediaBackend for Chaptarr {
         let mut author_added = false;
         if author.is_none() {
             let response = self
-                .send_json(Method::POST, "/book", &self.new_author_body(&item))
+                .add_book(&item.book.title, &self.new_author_body(&item))
                 .await?;
             if let Some(author_id) = positive_id(response.get("authorId"))
                 .or_else(|| positive_id(response.pointer("/author/id")))
@@ -1296,7 +1369,7 @@ impl MediaBackend for Chaptarr {
                     .as_ref()
                     .context("Chaptarr could not resolve the requested author")?;
                 let body = self.existing_author_book_body(&item, local_author)?;
-                self.send_json(Method::POST, "/book", &body).await?;
+                self.add_book(&item.book.title, &body).await?;
                 // Adding one work can itself start metadata work. Do not let
                 // the first visible row escape into monitoring; require the
                 // newly added target and its edition list to settle first.
@@ -1466,6 +1539,8 @@ mod tests {
     const AUTHOR: &str = include_str!("../../tests/fixtures/chaptarr/author.json");
     const COMMAND_RESPONSE: &str =
         include_str!("../../tests/fixtures/chaptarr/command_response.json");
+    const POST_BOOK_PENDING: &str =
+        include_str!("../../tests/fixtures/chaptarr/post_book_pending.json");
 
     fn backend(format: ChaptarrFormat) -> Chaptarr {
         Chaptarr {
@@ -1518,12 +1593,18 @@ mod tests {
     async fn mock_api(
         responses: Vec<String>,
     ) -> (String, Arc<Mutex<Vec<String>>>, tokio::task::JoinHandle<()>) {
+        mock_api_with_statuses(responses.into_iter().map(|body| (200, body)).collect()).await
+    }
+
+    async fn mock_api_with_statuses(
+        responses: Vec<(u16, String)>,
+    ) -> (String, Arc<Mutex<Vec<String>>>, tokio::task::JoinHandle<()>) {
         let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
         let address = listener.local_addr().unwrap();
         let requests = Arc::new(Mutex::new(Vec::new()));
         let recorded = Arc::clone(&requests);
         let server = tokio::spawn(async move {
-            for body in responses {
+            for (status, body) in responses {
                 let (mut stream, _) = listener.accept().await.unwrap();
                 let mut request = Vec::new();
                 let mut buffer = [0_u8; 4096];
@@ -1556,7 +1637,7 @@ mod tests {
                     .await
                     .push(String::from_utf8_lossy(&request).into_owned());
                 let response = format!(
-                    "HTTP/1.1 200 OK\r\nContent-Type: application/json\r\nContent-Length: {}\r\nConnection: close\r\n\r\n{}",
+                    "HTTP/1.1 {status} Mock\r\nContent-Type: application/json\r\nContent-Length: {}\r\nConnection: close\r\n\r\n{}",
                     body.len(),
                     body
                 );
@@ -2100,6 +2181,118 @@ mod tests {
         assert!(recorded[17].contains("\"bookIds\":[4199]"));
         assert!(recorded[20].contains("\"name\":\"BookSearch\""));
         assert!(recorded[20].contains("\"bookIds\":[4199]"));
+    }
+
+    #[tokio::test]
+    async fn upstream_pending_add_reports_retry_later_and_stops() {
+        // 202 Accepted with PendingBookRequestResource {pendingId, message}
+        // (BookController.cs:1304-1309, PendingBookRequestResource.cs:5-6):
+        // the upstream metadata provider has not published the work yet.
+        let responses = vec![
+            (200, "[]".to_string()),
+            (202, POST_BOOK_PENDING.to_string()),
+        ];
+        let (base_url, requests, server) = mock_api_with_statuses(responses).await;
+        let mut chaptarr = backend(ChaptarrFormat::Ebook);
+        chaptarr.base_url = base_url;
+        chaptarr.client = reqwest::Client::builder()
+            .timeout(Duration::from_secs(2))
+            .build()
+            .unwrap();
+        let mut item = lookup_item();
+        item.existing_book_id = None;
+
+        let error = chaptarr
+            .request(Vec::new(), Box::new(item), 1234)
+            .await
+            .unwrap_err();
+        assert!(error.downcast_ref::<UserFacingError>().is_some());
+        assert!(
+            error
+                .to_string()
+                .contains("Try the request again in a few minutes")
+        );
+        timeout(Duration::from_secs(2), server)
+            .await
+            .expect("mock server should finish")
+            .unwrap();
+
+        // The add attempt is the only mutation; nothing was monitored or
+        // searched while the work is pending upstream.
+        let recorded = requests.lock().await;
+        let lines: Vec<_> = recorded
+            .iter()
+            .map(|request| request_line(request))
+            .collect();
+        assert_eq!(
+            lines,
+            vec!["GET /api/v1/author HTTP/1.1", "POST /api/v1/book HTTP/1.1",]
+        );
+    }
+
+    #[tokio::test]
+    async fn ambiguous_provider_identity_names_the_conflict() {
+        // 409 with ProviderAmbiguityResource (ProviderAmbiguityResource.cs:41
+        // pins the status; BookController.cs:185-188 returns it).
+        let ambiguity = json!({
+            "error": "Ambiguous provider identity",
+            "message": "Multiple candidates matched the supplied provider id",
+            "entityType": "book",
+            "field": "foreignBookId",
+            "providerId": "gr:work-1001",
+            "mediaType": "ebook",
+            "candidates": [
+                {
+                    "id": 4101,
+                    "entityType": "book",
+                    "title": "The Clockwork Orchard",
+                    "authorName": "Mara Vale",
+                    "mediaType": "ebook"
+                },
+                {
+                    "id": 4102,
+                    "entityType": "book",
+                    "title": "The Clockwork Orchard: A Novel",
+                    "authorName": "Mara Vale",
+                    "mediaType": "ebook"
+                }
+            ]
+        });
+        let responses = vec![(200, "[]".to_string()), (409, ambiguity.to_string())];
+        let (base_url, requests, server) = mock_api_with_statuses(responses).await;
+        let mut chaptarr = backend(ChaptarrFormat::Ebook);
+        chaptarr.base_url = base_url;
+        chaptarr.client = reqwest::Client::builder()
+            .timeout(Duration::from_secs(2))
+            .build()
+            .unwrap();
+        let mut item = lookup_item();
+        item.existing_book_id = None;
+
+        let error = chaptarr
+            .request(Vec::new(), Box::new(item), 1234)
+            .await
+            .unwrap_err();
+        assert!(error.downcast_ref::<UserFacingError>().is_some());
+        let message = error.to_string();
+        assert!(message.contains("ambiguous"));
+        assert!(message.contains("The Clockwork Orchard by Mara Vale"));
+        assert!(message.contains("The Clockwork Orchard: A Novel by Mara Vale"));
+        assert!(message.contains("request it again"));
+        timeout(Duration::from_secs(2), server)
+            .await
+            .expect("mock server should finish")
+            .unwrap();
+
+        let recorded = requests.lock().await;
+        let lines: Vec<_> = recorded
+            .iter()
+            .map(|request| request_line(request))
+            .collect();
+        assert_eq!(
+            lines,
+            vec!["GET /api/v1/author HTTP/1.1", "POST /api/v1/book HTTP/1.1",]
+        );
     }
 
     #[tokio::test]

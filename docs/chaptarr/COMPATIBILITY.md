@@ -361,9 +361,12 @@ internals are sprint-2 scope.
   and a **409** with `ProviderAmbiguityResource`
   (`ProviderAmbiguityResource.cs:41` pins the status code; properties `error`,
   `message`, `entityType`, `field`, `providerId`, `mediaType`, `candidates`)
-  on ambiguous provider identity. The bot currently treats any 2xx as an
-  acknowledgement and re-resolves identity itself; branching on the 202/409
-  shapes is tracked as stretch work.
+  on ambiguous provider identity. The bot branches on all three: a 202 stops
+  with "Chaptarr queued this work upstream - try again in a few minutes", a
+  409 stops with a message naming the conflicting candidates, and a 201 is
+  still only an acknowledgement whose identity the bot re-resolves itself.
+  These meanings are specific to `POST /book` (`PUT /book/monitor` also
+  answers 202, as ordinary success).
 
 A post response is only an acknowledgement and never implies that a usable or
 correctly identified row already exists.
@@ -493,6 +496,7 @@ each row lists the source mechanism it models.
 | `root_folders.json` | Nested settings present only when configured, `folderType` ints, flat mirrors (`RootFolderResource.cs:39-69,399-400`) |
 | `root_folders_nested.json` | The same contract as captured live: one configured format per root |
 | `post_book_response.json` | 201-path created row without null keys or minted placeholder ids |
+| `post_book_pending.json` | 202-path `PendingBookRequestResource {pendingId, message}` (`PendingBookRequestResource.cs:5-6`) |
 | `put_monitor_response.json` | Non-authoritative acknowledgement snippet; never parsed for verification |
 | `command_response.json` | Servarr-style queued-command acknowledgement; only acknowledgement is relevant |
 
