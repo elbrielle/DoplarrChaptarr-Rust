@@ -247,10 +247,9 @@ pub(super) fn search_format_affinity(book: &BookShape, format: ChaptarrFormat) -
         return u8::from(book.media_type.eq_ignore_ascii_case(format_name(format))) * 3;
     }
     if book.editions.is_empty()
-        || book
-            .editions
-            .iter()
-            .all(|edition| edition.format.trim().is_empty() && edition.is_ebook.is_none())
+        || book.editions.iter().all(|edition| {
+            edition.reading_format_id.unwrap_or_default() == 0 && edition.is_ebook.is_none()
+        })
     {
         1
     } else if book
@@ -449,26 +448,59 @@ pub(super) fn book_list_fingerprint(rows: &[Value]) -> Vec<BookRowFingerprint> {
     fingerprint
 }
 
-/// An edition can be mutated or accepted during read-back only when
-/// Chaptarr's authoritative `format` is present and matches the request.
-/// `isEbook=false` cannot distinguish an audiobook from a physical edition,
-/// so the legacy boolean is never sufficient for a write decision.
+/// An edition can be mutated or accepted during read-back only when the
+/// structured `readingFormatId` matches the request (1=physical, 2=audio,
+/// 3=ebook; `Edition.cs:58`), or - when it is unset - `isEbook: true` proves
+/// an ebook. `isEbook: false` cannot distinguish an audiobook from a physical
+/// edition and `format` is verbatim provider text (`Edition.cs:41`), so both
+/// fail closed for writes. An unrecognized readingFormatId also fails closed;
+/// 0 is the C# unset default and is treated as absent.
 pub(super) fn edition_usable(edition: &Edition, format: ChaptarrFormat) -> bool {
-    let declared = edition.format.trim();
-    !declared.is_empty() && declared.eq_ignore_ascii_case(format_name(format))
+    match edition.reading_format_id {
+        Some(2) => format == ChaptarrFormat::Audiobook,
+        Some(3) => format == ChaptarrFormat::Ebook,
+        Some(id) if id != 0 => false,
+        _ => edition.is_ebook == Some(true) && format == ChaptarrFormat::Ebook,
+    }
 }
 
-/// Lookup ranking and cover discovery are non-mutating and can safely tolerate
-/// an old projection with no authoritative format. Explicit physical,
-/// unrecognized, or opposite-format records are still excluded.
+/// Lookup ranking and cover discovery are non-mutating and can safely stay
+/// tolerant when no structured discriminator exists: `isEbook` then splits
+/// ebook from not-ebook, and an untyped projection matches either format.
+/// A present readingFormatId is still decisive.
 fn edition_projection_compatible(edition: &Edition, format: ChaptarrFormat) -> bool {
-    let declared = edition.format.trim();
-    if !declared.is_empty() {
-        return declared.eq_ignore_ascii_case(format_name(format));
+    match edition.reading_format_id {
+        Some(2) => format == ChaptarrFormat::Audiobook,
+        Some(3) => format == ChaptarrFormat::Ebook,
+        Some(id) if id != 0 => false,
+        _ => edition
+            .is_ebook
+            .is_none_or(|value| value == (format == ChaptarrFormat::Ebook)),
     }
-    edition
-        .is_ebook
-        .is_none_or(|value| value == (format == ChaptarrFormat::Ebook))
+}
+
+/// One-line diagnostic of what the server offered when no edition was usable.
+/// This is where the free-text `format` earns its keep: it is display text for
+/// the operator, never an input to selection.
+pub(super) fn edition_summary_for_log(editions: &[Value]) -> String {
+    editions
+        .iter()
+        .filter_map(parse_edition)
+        .map(|edition| {
+            format!(
+                "id={} readingFormatId={} isEbook={} format={:?}",
+                positive_id(Some(&edition.id)).unwrap_or_default(),
+                edition
+                    .reading_format_id
+                    .map_or_else(|| "absent".to_string(), |v| v.to_string()),
+                edition
+                    .is_ebook
+                    .map_or_else(|| "absent".to_string(), |v| v.to_string()),
+                edition.format
+            )
+        })
+        .collect::<Vec<_>>()
+        .join("; ")
 }
 
 pub(super) fn usable_edition_count(editions: &[Value], format: ChaptarrFormat) -> usize {
@@ -1280,7 +1312,8 @@ mod tests {
                 starved,
                 vec![json!({
                     "id": 1,
-                    "format": "audiobook",
+                    "format": "Audible Audio",
+                    "readingFormatId": 2,
                     "isEbook": false,
                     "language": "eng"
                 })],
@@ -1288,8 +1321,8 @@ mod tests {
             (
                 stocked,
                 vec![
-                    json!({"id": 2, "format": "ebook", "isEbook": true, "language": "eng"}),
-                    json!({"id": 3, "format": "ebook", "isEbook": true, "language": "fre"}),
+                    json!({"id": 2, "format": "Kindle Edition", "readingFormatId": 3, "isEbook": true, "language": "eng"}),
+                    json!({"id": 3, "format": "ePub", "readingFormatId": 3, "isEbook": true, "language": "fre"}),
                 ],
             ),
         ];
@@ -1331,9 +1364,9 @@ mod tests {
     fn edition_choice_prefers_explicit_format_english_and_exact_title() {
         let selected = lookup_book();
         let editions = vec![
-            json!({"id": 1, "format": "ebook", "isEbook": true, "language": "ger", "title": "Die Uhrwerk-Plantage"}),
-            json!({"id": 2, "format": "ebook", "isEbook": true, "language": "eng", "title": "The Clockwork Orchard", "isbn13": "9780000000002"}),
-            json!({"id": 3, "format": "audiobook", "isEbook": false, "language": "eng", "title": "The Clockwork Orchard"}),
+            json!({"id": 1, "format": "Kindle Ausgabe", "readingFormatId": 3, "isEbook": true, "language": "ger", "title": "Die Uhrwerk-Plantage"}),
+            json!({"id": 2, "format": "Kindle Edition", "readingFormatId": 3, "isEbook": true, "language": "eng", "title": "The Clockwork Orchard", "isbn13": "9780000000002"}),
+            json!({"id": 3, "format": "Audible Audio", "readingFormatId": 2, "isEbook": false, "language": "eng", "title": "The Clockwork Orchard"}),
             json!({"id": 4, "language": "eng", "title": "The Clockwork Orchard"}),
         ];
         assert_eq!(
@@ -1347,54 +1380,97 @@ mod tests {
     }
 
     #[test]
-    fn authoritative_edition_format_rejects_physical_and_bad_values() {
+    fn reading_format_id_discriminates_editions_and_fails_closed() {
         let editions: Vec<Value> = serde_json::from_str(EDITION_FORMATS).unwrap();
-        // Defect on record: `format` is verbatim provider text ("Kindle
-        // Edition", "Audible Audio", ...; Edition.cs:41), so matching it
-        // against "ebook"/"audiobook" rejects every real 0.9.936 edition.
-        // The structured discriminator is readingFormatId (Edition.cs:58).
-        assert_eq!(usable_edition_count(&editions, ChaptarrFormat::Ebook), 0);
+        // 8101 (readingFormatId 3) and the legacy isEbook-only 8104 count as
+        // ebooks; 8102 (2) is the sole audiobook; 8103 (1, physical) is
+        // neither, whatever its provider text says.
+        assert_eq!(usable_edition_count(&editions, ChaptarrFormat::Ebook), 2);
         assert_eq!(
             usable_edition_count(&editions, ChaptarrFormat::Audiobook),
-            0
+            1
         );
 
-        let physical_claiming_ebook = parse_edition(&json!({
+        // `format` is verbatim provider text and never discriminates: a
+        // provider-labelled ebook with readingFormatId 3 is usable, while the
+        // old folklore shape (format "ebook", no structured discriminator,
+        // isEbook false) fails closed.
+        let kindle = parse_edition(&json!({
             "id": 1,
-            "format": "physical",
+            "format": "Kindle Edition",
+            "readingFormatId": 3,
             "isEbook": true
         }))
         .unwrap();
-        assert!(!edition_usable(
-            &physical_claiming_ebook,
+        assert!(edition_usable(&kindle, ChaptarrFormat::Ebook));
+        assert!(!edition_usable(&kindle, ChaptarrFormat::Audiobook));
+        let folklore_label =
+            parse_edition(&json!({"id": 2, "format": "ebook", "isEbook": false})).unwrap();
+        assert!(!edition_usable(&folklore_label, ChaptarrFormat::Ebook));
+
+        // readingFormatId 1 (physical) matches neither request format, even
+        // when a stale isEbook claims otherwise, for writes and ranking both.
+        let physical = parse_edition(&json!({
+            "id": 3,
+            "format": "Hardcover",
+            "readingFormatId": 1,
+            "isEbook": true
+        }))
+        .unwrap();
+        assert!(!edition_usable(&physical, ChaptarrFormat::Ebook));
+        assert!(!edition_usable(&physical, ChaptarrFormat::Audiobook));
+        assert!(!edition_projection_compatible(
+            &physical,
             ChaptarrFormat::Ebook
         ));
-        assert!(!edition_usable(
-            &physical_claiming_ebook,
+        assert!(!edition_projection_compatible(
+            &physical,
             ChaptarrFormat::Audiobook
         ));
 
-        let ebook_with_stale_legacy_flag = parse_edition(&json!({
-            "id": 2,
-            "format": "EBOOK",
-            "isEbook": false
-        }))
-        .unwrap();
-        assert!(edition_usable(
-            &ebook_with_stale_legacy_flag,
+        // Unrecognized discriminator values fail closed; 0 is the C# unset
+        // default and falls back to isEbook exactly like an absent key.
+        let unknown =
+            parse_edition(&json!({"id": 4, "readingFormatId": 7, "isEbook": true})).unwrap();
+        assert!(!edition_usable(&unknown, ChaptarrFormat::Ebook));
+        let unset_zero =
+            parse_edition(&json!({"id": 5, "readingFormatId": 0, "isEbook": true})).unwrap();
+        assert!(edition_usable(&unset_zero, ChaptarrFormat::Ebook));
+
+        // Absent readingFormatId: isEbook true proves an ebook; false or
+        // absent proves nothing (the edition can be physical), so writes fail
+        // closed while read-only ranking stays tolerant.
+        let legacy_ebook = parse_edition(&json!({"id": 6, "isEbook": true})).unwrap();
+        let legacy_not_ebook = parse_edition(&json!({"id": 7, "isEbook": false})).unwrap();
+        let untyped = parse_edition(&json!({"id": 8})).unwrap();
+        assert!(edition_usable(&legacy_ebook, ChaptarrFormat::Ebook));
+        assert!(!edition_usable(&legacy_ebook, ChaptarrFormat::Audiobook));
+        assert!(!edition_usable(&legacy_not_ebook, ChaptarrFormat::Ebook));
+        assert!(!edition_usable(
+            &legacy_not_ebook,
+            ChaptarrFormat::Audiobook
+        ));
+        assert!(!edition_usable(&untyped, ChaptarrFormat::Ebook));
+        assert!(!edition_usable(&untyped, ChaptarrFormat::Audiobook));
+        assert!(edition_projection_compatible(
+            &legacy_ebook,
             ChaptarrFormat::Ebook
         ));
-
-        let unknown = parse_edition(&json!({
-            "id": 3,
-            "format": "comic",
-            "isEbook": true
-        }))
-        .unwrap();
-        assert!(!edition_usable(&unknown, ChaptarrFormat::Ebook));
+        assert!(edition_projection_compatible(
+            &legacy_not_ebook,
+            ChaptarrFormat::Audiobook
+        ));
+        assert!(edition_projection_compatible(
+            &untyped,
+            ChaptarrFormat::Ebook
+        ));
+        assert!(edition_projection_compatible(
+            &untyped,
+            ChaptarrFormat::Audiobook
+        ));
 
         let physical_projection: BookShape = serde_json::from_value(json!({
-            "editions": [{"id": 30, "format": "physical", "isEbook": false}]
+            "editions": [{"id": 30, "format": "Hardcover", "readingFormatId": 1, "isEbook": false}]
         }))
         .unwrap();
         assert_eq!(
@@ -1403,36 +1479,19 @@ mod tests {
             "physical-only lookup data must not create audiobook affinity"
         );
 
-        let legacy_ebook = parse_edition(&json!({"id": 4, "isEbook": true})).unwrap();
-        let legacy_audio = parse_edition(&json!({"id": 5, "isEbook": false})).unwrap();
-        let untyped = parse_edition(&json!({"id": 6})).unwrap();
-        assert!(!edition_usable(&legacy_ebook, ChaptarrFormat::Ebook));
-        assert!(!edition_usable(&legacy_audio, ChaptarrFormat::Audiobook));
-        assert!(!edition_usable(&untyped, ChaptarrFormat::Ebook));
-        assert!(!edition_usable(&untyped, ChaptarrFormat::Audiobook));
-        assert!(edition_projection_compatible(
-            &legacy_ebook,
-            ChaptarrFormat::Ebook
-        ));
-        assert!(edition_projection_compatible(
-            &legacy_audio,
-            ChaptarrFormat::Audiobook
-        ));
-        assert!(edition_projection_compatible(
-            &untyped,
-            ChaptarrFormat::Ebook
-        ));
-        assert!(edition_projection_compatible(
-            &untyped,
-            ChaptarrFormat::Audiobook
-        ));
-        assert!(!edition_projection_compatible(
-            &physical_claiming_ebook,
-            ChaptarrFormat::Ebook
-        ));
-
+        // Read-back uses the same discriminator: a monitored provider-labelled
+        // ebook verifies, a monitored isEbook:false row can never verify as an
+        // audiobook.
+        let monitored_kindle = json!({
+            "id": 10,
+            "format": "Kindle Edition",
+            "readingFormatId": 3,
+            "isEbook": true,
+            "monitored": true
+        });
+        assert!(sole_monitored_edition(&[monitored_kindle], ChaptarrFormat::Ebook).is_some());
         let legacy_values = vec![json!({
-            "id": 7,
+            "id": 9,
             "isEbook": false,
             "language": "eng",
             "title": "The Clockwork Orchard",
@@ -1457,8 +1516,8 @@ mod tests {
         let mut selected = lookup_book();
         selected.foreign_edition_id = "hc:edition-3001".into();
         let editions = vec![
-            json!({"id": 1, "format": "ebook", "isEbook": true, "language": "eng", "title": "The Clockwork Orchard"}),
-            json!({"id": 2, "format": "ebook", "isEbook": true, "language": "eng", "title": "The Clockwork Orchard", "foreignEditionId": "hc:edition-3001"}),
+            json!({"id": 1, "format": "Kindle Edition", "readingFormatId": 3, "isEbook": true, "language": "eng", "title": "The Clockwork Orchard"}),
+            json!({"id": 2, "format": "Kindle Edition", "readingFormatId": 3, "isEbook": true, "language": "eng", "title": "The Clockwork Orchard", "foreignEditionId": "hc:edition-3001"}),
         ];
         assert_eq!(
             preferred_edition_index(&editions, ChaptarrFormat::Ebook, &selected),
@@ -1466,8 +1525,8 @@ mod tests {
         );
 
         let junky = vec![
-            json!({"id": 1, "format": "ebook", "isEbook": true, "language": "eng", "title": "Summary of The Clockwork Orchard"}),
-            json!({"id": 2, "format": "ebook", "isEbook": true, "language": "eng", "title": "The Clockwork Orchard"}),
+            json!({"id": 1, "format": "Kindle Edition", "readingFormatId": 3, "isEbook": true, "language": "eng", "title": "Summary of The Clockwork Orchard"}),
+            json!({"id": 2, "format": "Kindle Edition", "readingFormatId": 3, "isEbook": true, "language": "eng", "title": "The Clockwork Orchard"}),
         ];
         assert_eq!(
             preferred_edition_index(&junky, ChaptarrFormat::Ebook, &selected),
@@ -1477,14 +1536,14 @@ mod tests {
         let projected_english_summary = vec![
             json!({
                 "id": 1,
-                "format": "ebook",
+                "readingFormatId": 3,
                 "language": "eng",
                 "title": "Summary of The Clockwork Orchard",
                 "foreignEditionId": "hc:edition-3001"
             }),
             json!({
                 "id": 2,
-                "format": "ebook",
+                "readingFormatId": 3,
                 "language": "fre",
                 "title": "The Clockwork Orchard"
             }),
@@ -1501,7 +1560,8 @@ mod tests {
         let selected = selected_book("Le Comte", "hc:x");
         let editions = vec![json!({
             "id": 7,
-            "format": "ebook",
+            "format": "ePub",
+            "readingFormatId": 3,
             "isEbook": true,
             "language": "fre",
             "title": "Le Comte"
@@ -1523,8 +1583,10 @@ mod tests {
 
     #[test]
     fn sole_monitored_edition_requires_exactly_one_of_the_right_format() {
-        let one = json!({"id": 1, "format": "ebook", "isEbook": true, "monitored": true});
-        let other = json!({"id": 2, "format": "ebook", "isEbook": true, "monitored": false});
+        let one =
+            json!({"id": 1, "format": "Kindle Edition", "readingFormatId": 3, "monitored": true});
+        let other =
+            json!({"id": 2, "format": "Kindle Edition", "readingFormatId": 3, "monitored": false});
         let found = sole_monitored_edition(&[one.clone(), other.clone()], ChaptarrFormat::Ebook)
             .expect("one monitored ebook edition");
         assert_eq!(positive_id(Some(&found.id)), Some(1));
@@ -1533,14 +1595,14 @@ mod tests {
         assert!(
             sole_monitored_edition(std::slice::from_ref(&other), ChaptarrFormat::Ebook).is_none()
         );
-        let second = json!({"id": 3, "format": "ebook", "isEbook": true, "monitored": true});
+        let second = json!({"id": 3, "readingFormatId": 3, "monitored": true});
         assert!(sole_monitored_edition(&[one.clone(), second], ChaptarrFormat::Ebook).is_none());
         // A monitored edition that contradicts the format is a failure too.
         assert!(sole_monitored_edition(&[one], ChaptarrFormat::Audiobook).is_none());
 
         let valid = json!({
             "id": 4,
-            "format": "ebook",
+            "readingFormatId": 3,
             "monitored": true
         });
         let malformed = json!({
@@ -1554,10 +1616,23 @@ mod tests {
         );
         assert!(
             sole_monitored_edition(
-                &[json!({"id": 6, "format": "ebook", "monitored": "yes"})],
+                &[json!({"id": 6, "readingFormatId": 3, "monitored": "yes"})],
                 ChaptarrFormat::Ebook
             )
             .is_none()
+        );
+    }
+
+    #[test]
+    fn edition_summary_reports_provider_text_and_discriminators() {
+        let summary = edition_summary_for_log(&[
+            json!({"id": 8103, "format": "Hardcover", "readingFormatId": 1, "isEbook": false}),
+            json!({"id": 8104, "isEbook": true}),
+        ]);
+        assert_eq!(
+            summary,
+            "id=8103 readingFormatId=1 isEbook=false format=\"Hardcover\"; \
+             id=8104 readingFormatId=absent isEbook=true format=\"\""
         );
     }
 

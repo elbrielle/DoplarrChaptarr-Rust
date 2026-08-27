@@ -83,11 +83,15 @@ pub(super) struct Image {
 pub(super) struct Edition {
     #[serde(default, deserialize_with = "null_default")]
     pub(super) id: Value,
-    /// Chaptarr's authoritative edition discriminator (`ebook`, `audiobook`,
-    /// or `physical`). Older/projection responses may omit it, in which case
-    /// callers can fall back to `is_ebook` deliberately.
+    /// Verbatim provider text ("Kindle Edition", "Hardcover", ...;
+    /// `Edition.cs:41`) — display and logging only, never a discriminator.
     #[serde(default, deserialize_with = "null_default")]
     pub(super) format: String,
+    /// Chaptarr's structured edition discriminator: 1=physical, 2=audio,
+    /// 3=ebook (`Edition.cs:58`, `EditionResource.cs:48`; nullable, omitted
+    /// when unset).
+    #[serde(default)]
+    pub(super) reading_format_id: Option<i64>,
     #[serde(default)]
     pub(super) is_ebook: Option<bool>,
     #[serde(default)]

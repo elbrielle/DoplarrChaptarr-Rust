@@ -110,6 +110,7 @@ struct EditionFingerprint {
     id: String,
     foreign_edition_id: String,
     format: String,
+    reading_format_id: Option<i64>,
     is_ebook: Option<bool>,
     language: String,
     title: String,
@@ -522,6 +523,7 @@ impl Chaptarr {
                     id: edition.get("id").map(Value::to_string).unwrap_or_default(),
                     foreign_edition_id: string_at(edition, "foreignEditionId").to_string(),
                     format: string_at(edition, "format").to_ascii_lowercase(),
+                    reading_format_id: edition.get("readingFormatId").and_then(Value::as_i64),
                     is_ebook: edition.get("isEbook").and_then(Value::as_bool),
                     language: string_at(edition, "language").to_ascii_lowercase(),
                     title: string_at(edition, "title").to_string(),
@@ -790,6 +792,10 @@ impl Chaptarr {
     fn existing_author_book_body(&self, item: &ChaptarrItem, author: &Value) -> Result<Value> {
         let author_id = positive_id(author.get("id")).context("Local author has no id")?;
         let expected_ebook = self.format == ChaptarrFormat::Ebook;
+        let expected_reading_format = match self.format {
+            ChaptarrFormat::Ebook => 3,
+            ChaptarrFormat::Audiobook => 2,
+        };
         let selected_editions: Vec<Value> = item
             .book
             .editions
@@ -800,6 +806,7 @@ impl Chaptarr {
                     "title": if edition.title.is_empty() { &item.book.title } else { &edition.title },
                     "foreignEditionId": null_if_empty(&edition.foreign_edition_id),
                     "format": format_name(self.format),
+                    "readingFormatId": expected_reading_format,
                     "isEbook": expected_ebook,
                     "isbn13": edition.isbn13,
                     "monitored": false,
@@ -807,15 +814,17 @@ impl Chaptarr {
                 })
             })
             .collect();
-        // Lookup projections may omit authoritative format. Never relabel or
-        // carry such a projection (or a physical edition) into a write. A
-        // neutral requested-format placeholder lets Chaptarr resolve its own
+        // Free-text lookup editions carry no structured discriminator (a
+        // hardwired isEbook:false; BookInfoProxy.cs:3794-3810), so they are
+        // never usable and must not be relabeled into a write. The neutral
+        // requested-format placeholder lets Chaptarr resolve its own
         // authoritative `/edition` rows, which are settled and re-read before
         // any edition is selected.
         let editions = if selected_editions.is_empty() {
             vec![json!({
                 "title": item.book.title,
                 "format": format_name(self.format),
+                "readingFormatId": expected_reading_format,
                 "isEbook": expected_ebook,
                 "monitored": false,
                 "manualAdd": false
@@ -1369,6 +1378,11 @@ impl MediaBackend for Chaptarr {
             )));
         }
         let Some(chosen) = preferred_edition_index(&editions, self.format, &item.book) else {
+            warn!(
+                book_id = ?positive_id(book.get("id")),
+                offered = %edition_summary_for_log(&editions),
+                "No usable requested-format edition"
+            );
             bail!(UserFacingError(format!(
                 "Chaptarr has no usable {} edition of {}, so nothing was monitored or searched. The book needs attention in Chaptarr.",
                 format_name(self.format),
@@ -1656,7 +1670,7 @@ mod tests {
             {
                 "title": "The Clockwork Orchard hardcover",
                 "foreignEditionId": "hc:physical-1001",
-                "format": "physical",
+                "format": "Hardcover", "readingFormatId": 1,
                 "isEbook": false
             },
             {
@@ -1674,6 +1688,7 @@ mod tests {
         assert_eq!(editions.len(), 1);
         assert!(editions[0].get("foreignEditionId").is_none());
         assert_eq!(editions[0]["format"], "audiobook");
+        assert_eq!(editions[0]["readingFormatId"], 2);
         assert_eq!(editions[0]["isEbook"], false);
         assert_eq!(editions[0]["monitored"], false);
     }
@@ -1870,7 +1885,7 @@ mod tests {
             "bookId": 5101,
             "title": "The Clockwork Orchard",
             "foreignEditionId": "hc:audio-1001",
-            "format": "audiobook",
+            "format": "Audible Audio", "readingFormatId": 2,
             "isEbook": false,
             "language": "eng",
             "monitored": false,
@@ -1881,7 +1896,7 @@ mod tests {
             "bookId": 5101,
             "title": "The Clockwork Orchard",
             "foreignEditionId": "hc:audio-1001",
-            "format": "audiobook",
+            "format": "Audible Audio", "readingFormatId": 2,
             "isEbook": false,
             "language": "eng",
             "monitored": true,
@@ -2070,7 +2085,7 @@ mod tests {
             "bookId": 4101,
             "title": "The Clockwork Orchard",
             "foreignEditionId": "hc:edition-1001",
-            "format": "ebook",
+            "format": "Kindle Edition", "readingFormatId": 3,
             "isEbook": true,
             "language": "eng",
             "monitored": false,
@@ -2224,7 +2239,7 @@ mod tests {
             "bookId": 4101,
             "title": "The Clockwork Orchard",
             "foreignEditionId": "hc:edition-1001",
-            "format": "ebook",
+            "format": "Kindle Edition", "readingFormatId": 3,
             "isEbook": true,
             "language": "eng"
         }]);
@@ -2234,7 +2249,7 @@ mod tests {
                 "bookId": 4101,
                 "title": "The Clockwork Orchard",
                 "foreignEditionId": "hc:edition-1001",
-                "format": "ebook",
+                "format": "Kindle Edition", "readingFormatId": 3,
                 "isEbook": true,
                 "language": "eng"
             },
@@ -2243,7 +2258,7 @@ mod tests {
                 "bookId": 4101,
                 "title": "The Clockwork Orchard",
                 "foreignEditionId": "hc:edition-1002",
-                "format": "ebook",
+                "format": "Kindle Edition", "readingFormatId": 3,
                 "isEbook": true,
                 "language": "eng"
             }
@@ -2350,7 +2365,7 @@ mod tests {
             "bookId": 4101,
             "title": "The Clockwork Orchard",
             "foreignEditionId": "hc:edition-1001",
-            "format": "ebook",
+            "format": "Kindle Edition", "readingFormatId": 3,
             "isEbook": true,
             "language": "eng",
             "monitored": false,
@@ -2361,7 +2376,7 @@ mod tests {
             "bookId": 4101,
             "title": "The Clockwork Orchard",
             "foreignEditionId": "hc:edition-1001",
-            "format": "ebook",
+            "format": "Kindle Edition", "readingFormatId": 3,
             "isEbook": true,
             "language": "eng",
             "monitored": true,
@@ -2505,7 +2520,7 @@ mod tests {
             "bookId": 4101,
             "title": "The Clockwork Orchard",
             "foreignEditionId": "hc:edition-1001",
-            "format": "ebook",
+            "format": "Kindle Edition", "readingFormatId": 3,
             "isEbook": true,
             "language": "eng",
             "monitored": false,
@@ -2516,7 +2531,7 @@ mod tests {
             "bookId": 4101,
             "title": "The Clockwork Orchard",
             "foreignEditionId": "hc:edition-1001",
-            "format": "ebook",
+            "format": "Kindle Edition", "readingFormatId": 3,
             "isEbook": true,
             "language": "eng",
             "monitored": true,
@@ -2698,7 +2713,7 @@ mod tests {
             "bookId": 4101,
             "title": "The Clockwork Orchard",
             "foreignEditionId": "hc:edition-1001",
-            "format": "ebook",
+            "format": "Kindle Edition", "readingFormatId": 3,
             "isEbook": true,
             "language": "eng",
             "monitored": false,
@@ -2709,7 +2724,7 @@ mod tests {
             "bookId": 4101,
             "title": "The Clockwork Orchard",
             "foreignEditionId": "hc:edition-1001",
-            "format": "ebook",
+            "format": "Kindle Edition", "readingFormatId": 3,
             "isEbook": true,
             "language": "eng",
             "monitored": true,
@@ -2720,7 +2735,7 @@ mod tests {
             "bookId": 4101,
             "title": "The Clockwork Orchard: Annotated",
             "foreignEditionId": "hc:edition-1002",
-            "format": "ebook",
+            "format": "Kindle Edition", "readingFormatId": 3,
             "isEbook": true,
             "language": "eng",
             "monitored": false,
