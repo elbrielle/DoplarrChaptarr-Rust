@@ -1682,6 +1682,81 @@ mod tests {
     }
 
     #[test]
+    fn add_bodies_round_trip_the_upstream_provider_identity() {
+        // POST /book 400s unless an upstream provider work id survives
+        // mapping (IsMissingUpstreamProviderBookId,
+        // BookController.cs:1386-1397), and the native API rejects bare
+        // unprefixed foreign ids (BookController.cs:1399-1430; canonical
+        // prefixes hc/gr/ol/gb/az, ProviderIdHelper.cs:8-20). Both
+        // allowlisted add bodies must therefore retain a canonically
+        // prefixed work and author identity, an explicit mediaType (so the
+        // Seerr both-formats path never triggers), and no bare edition ids.
+        const CANONICAL_PREFIXES: [&str; 5] = ["hc", "gr", "ol", "gb", "az"];
+        fn assert_native_id(value: &Value) {
+            let id = value.as_str().expect("provider id must be a string");
+            let (prefix, remainder) = id
+                .split_once(':')
+                .unwrap_or_else(|| panic!("native ids must be prefixed: {id}"));
+            assert!(
+                CANONICAL_PREFIXES.contains(&prefix),
+                "unknown provider prefix: {id}"
+            );
+            assert!(!remainder.trim().is_empty(), "empty provider id: {id}");
+        }
+        fn assert_body_identity(body: &Value) {
+            assert_native_id(&body["foreignBookId"]);
+            assert_native_id(&body["author"]["foreignAuthorId"]);
+            assert!(matches!(
+                body["mediaType"].as_str(),
+                Some("ebook" | "audiobook")
+            ));
+            if let Some(editions) = body.get("editions").and_then(Value::as_array) {
+                for edition in editions {
+                    match edition.get("foreignEditionId") {
+                        None | Some(Value::Null) => {}
+                        Some(value) => assert_native_id(value),
+                    }
+                }
+            }
+        }
+
+        let item = lookup_item();
+        let author: Value = serde_json::from_str(AUTHOR).unwrap();
+        for format in [ChaptarrFormat::Ebook, ChaptarrFormat::Audiobook] {
+            assert_body_identity(&backend(format).new_author_body(&item));
+            assert_body_identity(
+                &backend(format)
+                    .existing_author_book_body(&item, &author)
+                    .unwrap(),
+            );
+        }
+
+        // A usable (readingFormatId-typed) lookup edition keeps its prefixed
+        // edition id in the body instead of being replaced by the neutral
+        // placeholder.
+        let mut rich = lookup_item();
+        rich.book.editions = serde_json::from_value(json!([{
+            "title": "The Clockwork Orchard",
+            "foreignEditionId": "gr:edition-3001",
+            "format": "Kindle Edition",
+            "readingFormatId": 3,
+            "isEbook": true
+        }]))
+        .unwrap();
+        let body = backend(ChaptarrFormat::Ebook)
+            .existing_author_book_body(&rich, &author)
+            .unwrap();
+        assert_body_identity(&body);
+        let editions = body["editions"].as_array().unwrap();
+        assert!(
+            editions
+                .iter()
+                .any(|edition| edition["foreignEditionId"] == "gr:edition-3001"),
+            "a usable edition's provider id must survive the allowlist"
+        );
+    }
+
+    #[test]
     fn existing_author_body_is_allowlisted_and_all_unmonitored() {
         let item = lookup_item();
         let author: Value = serde_json::from_str(AUTHOR).unwrap();
