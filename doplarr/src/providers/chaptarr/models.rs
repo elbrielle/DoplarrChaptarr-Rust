@@ -156,6 +156,19 @@ pub(super) struct BookShape {
     pub(super) foreign_book_id: String,
     #[serde(default, deserialize_with = "null_default")]
     pub(super) foreign_edition_id: String,
+    /// Per-provider identity sidecars (`BookResource.cs:36-42,199-205`): all
+    /// strings, omitted when unknown. `goodreadsBookId` is edition-derived
+    /// (`BookEditionIdentity.cs:127-139`); `asin`/`audibleASIN` are bare
+    /// uppercase ASINs, never `prefix:value` ids
+    /// (`BookEditionIdentity.cs:533-541`).
+    #[serde(default, deserialize_with = "null_default")]
+    pub(super) goodreads_book_id: String,
+    #[serde(default, deserialize_with = "null_default")]
+    pub(super) goodreads_work_id: String,
+    #[serde(default, deserialize_with = "null_default")]
+    pub(super) asin: String,
+    #[serde(rename = "audibleASIN", default, deserialize_with = "null_default")]
+    pub(super) audible_asin: String,
     #[serde(default, deserialize_with = "null_default")]
     pub(super) remote_cover: String,
     #[serde(default, deserialize_with = "null_default")]
@@ -260,6 +273,30 @@ mod serializer_traps {
             !configured.ebook,
             "a settings object is not the legacy bool flag"
         );
+    }
+
+    #[test]
+    fn provider_id_sidecars_use_exact_wire_names_and_tolerate_absence() {
+        // `AudibleASIN` camel-cases to `audibleASIN` (the built-in policy only
+        // lowercases the leading run up to the next lowercase letter), unlike
+        // the regular lowerCamel fields around it.
+        let book: BookShape = serde_json::from_value(json!({
+            "goodreadsBookId": "gr:11",
+            "goodreadsWorkId": "gr:12",
+            "asin": "B0EXAMPLE01",
+            "audibleASIN": "B0EXAMPLE02"
+        }))
+        .unwrap();
+        assert_eq!(book.goodreads_book_id, "gr:11");
+        assert_eq!(book.goodreads_work_id, "gr:12");
+        assert_eq!(book.asin, "B0EXAMPLE01");
+        assert_eq!(book.audible_asin, "B0EXAMPLE02");
+
+        let sparse: BookShape = serde_json::from_value(json!({})).unwrap();
+        assert!(sparse.goodreads_book_id.is_empty());
+        assert!(sparse.goodreads_work_id.is_empty());
+        assert!(sparse.asin.is_empty());
+        assert!(sparse.audible_asin.is_empty());
     }
 
     #[test]

@@ -11,6 +11,15 @@ success when that `BookSearch` completed with zero results. It had not selected
 a usable ebook edition, and the import tail later removed the partial monitor
 state.
 
+### Changed - Simplification & identity (Sprint 2)
+
+- Local book rows are matched through a tiered cross-provider identity chain:
+  exact `foreignBookId`, then the `goodreadsWorkId`/`goodreadsBookId`
+  sidecars, then bare `asin`/`audibleASIN` equality, with the title tier only
+  for selections that carry no identity at all. A row whose primary id
+  normalized from `gr:` to `hc:` now short-circuits to the existing row
+  instead of re-adding or failing.
+
 ### Changed - Chaptarr 0.9.936 rebaseline (Sprint 1: Truth & Correctness)
 
 Every Chaptarr behavior contract is now derived from and cited against the

@@ -143,13 +143,33 @@ Canonical provider-id prefixes are `hc, gr, ol, gb, az`
 that order when a primary id is chosen (`BookInfoProxy.cs:5333`,
 `ProviderAmbiguityResource.cs:236-242`). Free-text results carry `gr:` ids;
 imported entities normalize toward `hc:` over time, and primary ids are
-documented as mutable (`docs/API_IDENTITY_AND_LIFECYCLE.md:13-46`). The bot
-resolves authors first by exact `foreignAuthorId`, then by a normalized
-author-name fallback only when exactly one local author matches; local book
-rows must match the selected `foreignBookId` exactly, with a title-tier
-fallback only when the selection has no work id. A row whose id has already
-normalized away from the lookup's `gr:` id will not foreign-id-match; this
-drift is a known hazard flagged for the sprint-3 live canary.
+documented as mutable (`docs/API_IDENTITY_AND_LIFECYCLE.md:13-46`).
+
+`BookResource` also serializes per-provider identity sidecars — all strings,
+omitted when unknown (`BookResource.cs:36-42,199-205`): `hardcoverBookId`,
+`goodreadsBookId` (edition-derived, `BookEditionIdentity.cs:127-139`),
+`goodreadsWorkId`, `openLibraryWorkId`, `googleBooksId`, and `asin` /
+`audibleASIN` (bare uppercase ASINs with no prefix,
+`BookEditionIdentity.cs:533-541`). Free-text lookup rows set only
+`goodreadsWorkId` plus the edition-level `goodreadsBookId`
+(`BookInfoProxy.cs:3768,3778,3796-3797`). Two hazards shape how these can be
+used: a refresh copies provider ids upstream-authoritatively, so a metadata
+blob missing `goodreadsWorkId` nulls the local copy (`Book.cs:286-288` with
+`CleanProviderIdForCopy` `:318-331`), and `AuthorResource` carries **no**
+per-provider sidecars at all — only the computed, equally drift-prone
+`foreignAuthorId` (`AuthorResource.cs:27,195-222`).
+
+The bot therefore matches local book rows through a tiered identity chain,
+run only inside format-matched rows: exact `foreignBookId` equality, then
+`goodreadsWorkId`, then `goodreadsBookId` (both canonical `gr:` ids,
+case-insensitive), then bare-ASIN equality across `asin`/`audibleASIN`
+(normalized, never parsed as `prefix:value`). A field absent on either side
+skips its tier; a full miss fails closed, and the title-tier fallback applies
+only when the selection carries no identity at all. Author resolution stays
+exact-`foreignAuthorId` first with the single-match name fallback — with no
+sidecar fields there is nothing safer to chain on. The sprint-3 canary keeps
+its explicit drift probe: a `gr:` lookup must resolve a row whose primary id
+normalized to `hc:`.
 
 ## Profiles
 

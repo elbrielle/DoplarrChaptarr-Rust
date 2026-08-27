@@ -217,6 +217,33 @@ fn local_row_matches_format(value: &Value, format: ChaptarrFormat) -> bool {
     })
 }
 
+/// Case-insensitive equality of two canonical `prefix:value` provider ids;
+/// absent on either side is never a match.
+fn provider_id_eq(local: &str, selected: &str) -> bool {
+    let (local, selected) = (local.trim(), selected.trim());
+    !local.is_empty() && local.eq_ignore_ascii_case(selected)
+}
+
+/// ASINs are bare uppercase strings with no prefix
+/// (`BookEditionIdentity.cs:533-541`); normalize both sides and never run
+/// them through a `prefix:value` parser. `asin` and `audibleASIN` identify
+/// the same product namespace, so either field can witness the other.
+fn asin_identities(book: &BookShape) -> Vec<String> {
+    [book.asin.as_str(), book.audible_asin.as_str()]
+        .iter()
+        .map(|asin| asin.trim().to_ascii_uppercase())
+        .filter(|asin| !asin.is_empty())
+        .collect()
+}
+
+fn book_carries_identity(book: &BookShape) -> bool {
+    !book.foreign_book_id.trim().is_empty()
+        || !book.goodreads_work_id.trim().is_empty()
+        || !book.goodreads_book_id.trim().is_empty()
+        || !book.asin.trim().is_empty()
+        || !book.audible_asin.trim().is_empty()
+}
+
 pub(super) fn local_row_matches_item(
     value: &Value,
     format: ChaptarrFormat,
@@ -228,15 +255,29 @@ pub(super) fn local_row_matches_item(
     let Some(local) = parse_book(value) else {
         return false;
     };
-    if !selected.foreign_book_id.trim().is_empty() {
-        // Once lookup supplied a stable work id, never substitute a same-title
-        // row whose id is missing or different. Title matching is only a
-        // fallback for projections that genuinely have no work id.
-        !local.foreign_book_id.trim().is_empty()
-            && local.foreign_book_id == selected.foreign_book_id
-    } else {
-        title_match_tier(&local.title, &selected.title) > 0
+    if !book_carries_identity(selected) {
+        // Title matching is only a fallback for projections that genuinely
+        // carry no identity at all.
+        return title_match_tier(&local.title, &selected.title) > 0;
     }
+    // Tiered identity chain. `foreignBookId` flips `gr:` → `hc:` the moment
+    // `HardcoverBookId` populates (`BookResource.cs:798-871`), while free-text
+    // lookups only ever carry `gr:` ids (`BookInfoProxy.cs:3768,3778`), so the
+    // per-provider sidecar ids must also witness identity. A field absent on
+    // either side skips its tier (refresh can null `goodreadsWorkId`,
+    // `Book.cs:286-288,318-331`); a full miss fails closed - a same-title row
+    // never overrides a mismatched identity.
+    let exact_foreign_id = !selected.foreign_book_id.trim().is_empty()
+        && local.foreign_book_id == selected.foreign_book_id;
+    exact_foreign_id
+        || provider_id_eq(&local.goodreads_work_id, &selected.goodreads_work_id)
+        || provider_id_eq(&local.goodreads_book_id, &selected.goodreads_book_id)
+        || {
+            let local_asins = asin_identities(&local);
+            asin_identities(selected)
+                .iter()
+                .any(|asin| local_asins.contains(asin))
+        }
 }
 
 /// Rank duplicate lookup projections without treating a projection as an
@@ -1250,6 +1291,161 @@ mod tests {
             ChaptarrFormat::Ebook,
             &selected,
         ));
+    }
+
+    #[test]
+    fn drifted_primary_id_still_matches_via_provider_sidecars() {
+        // The live drift hazard: a free-text lookup returns `gr:` ids
+        // (BookInfoProxy.cs:3768,3778), but BuildForeignBookId flips the local
+        // row to `hc:` once HardcoverBookId populates (BookResource.cs:798-871).
+        // The sidecar tiers must bridge that instead of re-adding the work.
+        let selected = lookup_book();
+        assert_eq!(selected.foreign_book_id, "gr:work-1001");
+        assert_eq!(selected.goodreads_work_id, "gr:work-1001");
+
+        let drifted = json!({
+            "id": 4301,
+            "title": "The Clockwork Orchard",
+            "foreignBookId": "hc:work-9001",
+            "goodreadsWorkId": "GR:WORK-1001",
+            "mediaType": "ebook"
+        });
+        assert!(local_row_matches_item(
+            &drifted,
+            ChaptarrFormat::Ebook,
+            &selected
+        ));
+        assert_eq!(
+            preferred_book(
+                std::slice::from_ref(&drifted),
+                ChaptarrFormat::Ebook,
+                &selected
+            )
+            .and_then(|row| positive_id(row.get("id"))),
+            Some(4301)
+        );
+
+        // The edition-derived goodreadsBookId tier works the same way.
+        let edition_derived = json!({
+            "id": 4302,
+            "title": "The Clockwork Orchard",
+            "foreignBookId": "hc:work-9001",
+            "goodreadsBookId": "gr:book-7001",
+            "mediaType": "ebook"
+        });
+        let mut selected_by_book_id = selected_book("The Clockwork Orchard", "gr:work-1001");
+        selected_by_book_id.goodreads_book_id = "gr:book-7001".into();
+        assert!(local_row_matches_item(
+            &edition_derived,
+            ChaptarrFormat::Ebook,
+            &selected_by_book_id
+        ));
+
+        // Cross-format safety is unchanged: no tier can bridge formats.
+        assert!(!local_row_matches_item(
+            &drifted,
+            ChaptarrFormat::Audiobook,
+            &selected
+        ));
+    }
+
+    #[test]
+    fn asin_tier_matches_after_a_refresh_wipes_goodreads_work_id() {
+        // Refresh copies provider ids upstream-authoritatively: a metadata
+        // blob missing goodreadsWorkId nulls the local copy on the next
+        // changed refresh (Book.cs:286-288 with CleanProviderIdForCopy
+        // :318-331). ASINs are bare uppercase strings (never prefixed,
+        // BookEditionIdentity.cs:533-541) and asin/audibleASIN share one
+        // product namespace, so either field witnesses the other.
+        let mut selected = selected_book("The Clockwork Orchard", "gr:work-1001");
+        selected.asin = "b0example01".into();
+        let wiped = json!({
+            "id": 4303,
+            "title": "The Clockwork Orchard",
+            "foreignBookId": "hc:work-9001",
+            "audibleASIN": "B0EXAMPLE01",
+            "mediaType": "audiobook"
+        });
+        assert!(local_row_matches_item(
+            &wiped,
+            ChaptarrFormat::Audiobook,
+            &selected
+        ));
+        // A prefixed value can never satisfy the bare-ASIN tier.
+        let prefixed = json!({
+            "id": 4304,
+            "title": "The Clockwork Orchard",
+            "foreignBookId": "hc:work-9001",
+            "asin": "az:B0EXAMPLE01",
+            "mediaType": "audiobook"
+        });
+        assert!(!local_row_matches_item(
+            &prefixed,
+            ChaptarrFormat::Audiobook,
+            &selected
+        ));
+    }
+
+    #[test]
+    fn identity_mismatch_fails_closed_without_title_rescue() {
+        let selected = lookup_book();
+        // Every populated tier disagrees; the shared title must not rescue it.
+        let different_work = json!({
+            "id": 4305,
+            "title": "The Clockwork Orchard",
+            "foreignBookId": "hc:work-2222",
+            "goodreadsWorkId": "gr:work-2222",
+            "mediaType": "ebook"
+        });
+        assert!(!local_row_matches_item(
+            &different_work,
+            ChaptarrFormat::Ebook,
+            &selected
+        ));
+        // Absent sidecars skip their tiers without matching anything.
+        let no_sidecars = json!({
+            "id": 4306,
+            "title": "The Clockwork Orchard",
+            "foreignBookId": "hc:work-2222",
+            "mediaType": "ebook"
+        });
+        assert!(!local_row_matches_item(
+            &no_sidecars,
+            ChaptarrFormat::Ebook,
+            &selected
+        ));
+    }
+
+    #[test]
+    fn drifted_pockets_use_the_same_identity_chain() {
+        // already-requested state and pocket resolution share
+        // local_row_matches_item, so a drifted row keeps carrying its
+        // availability and its editions.
+        let selected = lookup_book();
+        let drifted_available = json!({
+            "id": 4307,
+            "title": "The Clockwork Orchard",
+            "foreignBookId": "hc:work-9001",
+            "goodreadsWorkId": "gr:work-1001",
+            "mediaType": "ebook",
+            "hasFiles": true
+        });
+        assert_eq!(
+            format_state_across(
+                std::slice::from_ref(&drifted_available),
+                ChaptarrFormat::Ebook,
+                &selected
+            ),
+            FormatState::Available
+        );
+        let rows = vec![(
+            drifted_available,
+            vec![json!({"id": 8301, "readingFormatId": 3})],
+        )];
+        assert_eq!(
+            preferred_pocket(&rows, ChaptarrFormat::Ebook, &selected),
+            Some(0)
+        );
     }
 
     #[test]

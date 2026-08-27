@@ -4,6 +4,7 @@
     "titleSlug": "the-clockwork-orchard-mara-vale",
     "foreignBookId": "gr:work-1001",
     "foreignEditionId": "gr:edition-5001",
+    "goodreadsWorkId": "gr:work-1001",
     "overview": "A synthetic work returned through an audiobook projection.",
     "mediaType": "audiobook",
     "monitored": false,

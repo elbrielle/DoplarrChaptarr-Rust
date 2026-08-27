@@ -2259,6 +2259,75 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn drifted_identity_request_short_circuits_to_the_existing_row() {
+        // The sprint demo scenario for identity drift: the lookup carries
+        // `gr:` ids, but the imported row's primary id normalized to `hc:`
+        // (BookResource.cs:798-871) - including the author's foreignAuthorId
+        // (AuthorResource BuildForeignAuthorId, same precedence). The request
+        // must recognize the existing row through the goodreadsWorkId sidecar
+        // and stop, instead of re-adding the work.
+        let drifted_author = json!({
+            "id": 7001,
+            "authorName": "Mara Vale",
+            "foreignAuthorId": "hc:author-9001",
+            "monitored": true,
+            "ebookMonitorFuture": true,
+            "audiobookMonitorFuture": false
+        });
+        let drifted_row = json!({
+            "id": 4101,
+            "authorId": 7001,
+            "title": "The Clockwork Orchard",
+            "foreignBookId": "hc:work-9001",
+            "goodreadsWorkId": "gr:work-1001",
+            "mediaType": "ebook",
+            "monitored": true,
+            "ebookMonitored": true,
+            "hasFiles": true
+        });
+        let responses = vec![
+            json!([drifted_author]).to_string(),
+            json!([drifted_row]).to_string(),
+        ];
+        let (base_url, requests, server) = mock_api(responses).await;
+        let mut chaptarr = backend(ChaptarrFormat::Ebook);
+        chaptarr.base_url = base_url;
+        chaptarr.client = reqwest::Client::builder()
+            .timeout(Duration::from_secs(2))
+            .build()
+            .unwrap();
+        let mut item = lookup_item();
+        item.existing_book_id = None;
+        assert_eq!(item.book.foreign_book_id, "gr:work-1001");
+        assert_eq!(item.book.author.foreign_author_id, "gr:author-2001");
+
+        let error = chaptarr
+            .request(Vec::new(), Box::new(item), 1234)
+            .await
+            .unwrap_err();
+        assert!(error.downcast_ref::<UserFacingError>().is_some());
+        assert!(error.to_string().contains("already available"));
+        timeout(Duration::from_secs(2), server)
+            .await
+            .expect("mock server should finish")
+            .unwrap();
+
+        // Recognition is read-only: no add, no monitor write, no search.
+        let recorded = requests.lock().await;
+        let lines: Vec<_> = recorded
+            .iter()
+            .map(|request| request_line(request))
+            .collect();
+        assert_eq!(
+            lines,
+            vec![
+                "GET /api/v1/author HTTP/1.1",
+                "GET /api/v1/book?authorId=7001 HTTP/1.1",
+            ]
+        );
+    }
+
+    #[tokio::test]
     async fn upstream_pending_add_reports_retry_later_and_stops() {
         // 202 Accepted with PendingBookRequestResource {pendingId, message}
         // (BookController.cs:1304-1309, PendingBookRequestResource.cs:5-6):

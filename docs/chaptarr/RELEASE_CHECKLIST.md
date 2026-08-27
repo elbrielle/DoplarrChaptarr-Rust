@@ -114,6 +114,17 @@ write-path behaviors; the next canary must exercise each one explicitly:
 - `POST /book` `202` and `409` responses stop the flow with user-facing
   messages instead of continuing into settle/poll.
 
+## Sprint 2 write-path changes to prove live
+
+The simplification-and-identity work (Sprint 2) changed these write-path
+behaviors; the next canary must exercise each one explicitly:
+
+- Local-row matching runs the tiered cross-provider identity chain
+  (`foreignBookId` → `goodreadsWorkId` → `goodreadsBookId` → bare
+  `asin`/`audibleASIN`): the existing identity-drift probe must confirm a
+  `gr:` lookup short-circuits to an `hc:`-normalized local row with no
+  re-add, and that the sidecar fields are actually present on imported rows.
+
 Nothing in this sprint graduates the write path out of beta; that requires
 this checklist's mutation proof against a disposable 0.9.936 instance.
 
