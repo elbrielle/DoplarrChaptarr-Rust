@@ -11,19 +11,6 @@ where
     Option::<T>::deserialize(deserializer).map(Option::unwrap_or_default)
 }
 
-/// On 0.9.936 the root-folder `ebook`/`audiobook` keys are nested settings
-/// objects, present only when the root is configured for that format
-/// (`RootFolderResource.cs:46-47,399-400`); pre-0.9.936 payloads used plain
-/// booleans. Only a literal `true` sets this legacy flag — object presence is
-/// not yet consumed for resolution, which still keys on explicit flags,
-/// effective defaults, and name inference.
-fn bool_only<'de, D>(deserializer: D) -> Result<bool, D::Error>
-where
-    D: serde::Deserializer<'de>,
-{
-    Option::<Value>::deserialize(deserializer).map(|value| matches!(value, Some(Value::Bool(true))))
-}
-
 #[derive(Debug, Clone, Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub(super) struct Profile {
@@ -33,7 +20,13 @@ pub(super) struct Profile {
     pub(super) profile_type: Value,
 }
 
-#[derive(Debug, Clone, Deserialize)]
+/// The nested `ebook`/`audiobook` keys are settings objects, present only
+/// when the root is configured for that format (`RootFolderResource.cs:397-411`
+/// returns null — omitted — when unconfigured). The flattened mirror fields
+/// cannot replace them: the four sidecar booleans coerce null→false and the
+/// tag lists null→[] (`:124-127,130-131`), so only object presence
+/// distinguishes "unconfigured" from "false".
+#[derive(Debug, Clone, Default, Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub(super) struct RootFolder {
     pub(super) path: String,
@@ -41,10 +34,15 @@ pub(super) struct RootFolder {
     pub(super) name: String,
     #[serde(default = "default_true", deserialize_with = "null_default")]
     pub(super) accessible: bool,
-    #[serde(default, deserialize_with = "bool_only")]
-    pub(super) ebook: bool,
-    #[serde(default, deserialize_with = "bool_only")]
-    pub(super) audiobook: bool,
+    /// `Mixed=0, Audiobook=1, Ebook=2` (`RootFolder.cs:9-14`, resource
+    /// `RootFolderResource.cs:39`; bad values write-rejected with 400,
+    /// `:170-174`).
+    #[serde(default, deserialize_with = "null_default")]
+    pub(super) folder_type: i64,
+    #[serde(default)]
+    pub(super) ebook: Option<Value>,
+    #[serde(default)]
+    pub(super) audiobook: Option<Value>,
     #[serde(default, deserialize_with = "null_default")]
     pub(super) is_effective_default_ebook: bool,
     #[serde(default, deserialize_with = "null_default")]
@@ -261,7 +259,8 @@ mod serializer_traps {
         }))
         .unwrap();
         assert!(bare.accessible);
-        assert!(!bare.ebook && !bare.audiobook);
+        assert_eq!(bare.folder_type, 0);
+        assert!(bare.ebook.is_none() && bare.audiobook.is_none());
 
         let configured: RootFolder = serde_json::from_value(json!({
             "path": "/library/ebooks",
@@ -269,10 +268,9 @@ mod serializer_traps {
             "ebook": {"writeAudioBookShelfMetadataJson": false, "tags": []}
         }))
         .unwrap();
-        assert!(
-            !configured.ebook,
-            "a settings object is not the legacy bool flag"
-        );
+        assert_eq!(configured.folder_type, 2);
+        assert!(configured.ebook.is_some());
+        assert!(configured.audiobook.is_none());
     }
 
     #[test]

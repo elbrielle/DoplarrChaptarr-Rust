@@ -83,6 +83,26 @@ pub(super) fn resolve_profile(
     )
 }
 
+/// True when this root can serve the format: a typed root (`folderType`
+/// 1=Audiobook, 2=Ebook; `RootFolder.cs:9-14`) is decisive by type, while a
+/// Mixed root (0) serves a format only when its nested settings object is
+/// present — absent means unconfigured for that format
+/// (`RootFolderResource.cs:397-411`). An unknown type is never selectable.
+fn root_serves(root: &RootFolder, format: ChaptarrFormat) -> bool {
+    match root.folder_type {
+        1 => format == ChaptarrFormat::Audiobook,
+        2 => format == ChaptarrFormat::Ebook,
+        0 => {
+            let nested = match format {
+                ChaptarrFormat::Ebook => &root.ebook,
+                ChaptarrFormat::Audiobook => &root.audiobook,
+            };
+            nested.as_ref().is_some_and(|settings| !settings.is_null())
+        }
+        _ => false,
+    }
+}
+
 pub(super) fn resolve_root(
     roots: &[RootFolder],
     format: ChaptarrFormat,
@@ -96,37 +116,31 @@ pub(super) fn resolve_root(
             .filter(|root| root.path == value || root.name == value)
             .collect()
     } else {
-        let has_format_discriminators = accessible.iter().any(|root| {
-            root.ebook
-                || root.audiobook
-                || root.is_effective_default_ebook
-                || root.is_effective_default_audiobook
-        });
-        let mut inferred: Vec<_> = accessible
+        let candidates: Vec<_> = accessible
             .iter()
             .copied()
-            .filter(|root| {
-                if has_format_discriminators {
-                    match format {
-                        ChaptarrFormat::Ebook => root.ebook || root.is_effective_default_ebook,
-                        ChaptarrFormat::Audiobook => {
-                            root.audiobook || root.is_effective_default_audiobook
-                        }
-                    }
-                } else {
-                    let label = normalize(&format!("{} {}", root.name, root.path));
-                    let audio = label.contains("audiobook") || label.contains("audio book");
-                    match format {
-                        ChaptarrFormat::Ebook => !audio && label.contains("book"),
-                        ChaptarrFormat::Audiobook => audio,
-                    }
-                }
-            })
+            .filter(|root| root_serves(root, format))
             .collect();
-        if inferred.is_empty() && accessible.len() == 1 {
-            inferred.push(accessible[0]);
+        if candidates.len() > 1 {
+            // isEffectiveDefault* is populated on GET /rootfolder
+            // (RootFolderController.cs:177-184) and breaks ties between
+            // several roots serving the same format.
+            let defaults: Vec<_> = candidates
+                .iter()
+                .copied()
+                .filter(|root| match format {
+                    ChaptarrFormat::Ebook => root.is_effective_default_ebook,
+                    ChaptarrFormat::Audiobook => root.is_effective_default_audiobook,
+                })
+                .collect();
+            if defaults.len() == 1 {
+                defaults
+            } else {
+                candidates
+            }
+        } else {
+            candidates
         }
-        inferred
     };
     if matches.len() == 1 {
         return Ok(matches[0].path.clone());
@@ -937,42 +951,103 @@ mod tests {
     }
 
     #[test]
-    fn nested_root_settings_objects_never_populate_the_legacy_bool_flags() {
+    fn typed_roots_resolve_by_folder_type_alone() {
         let roots: Vec<RootFolder> = serde_json::from_str(LIVE_ROOTS).unwrap();
-        assert!(roots.iter().all(|root| !root.ebook && !root.audiobook));
         assert_eq!(
-            resolve_root(&roots, ChaptarrFormat::Ebook, Some("/library/ebooks")).unwrap(),
+            resolve_root(&roots, ChaptarrFormat::Ebook, None).unwrap(),
             "/library/ebooks"
         );
         assert_eq!(
             resolve_root(&roots, ChaptarrFormat::Audiobook, None).unwrap(),
             "/library/audiobooks"
         );
+        assert_eq!(
+            resolve_root(&roots, ChaptarrFormat::Ebook, Some("/library/ebooks")).unwrap(),
+            "/library/ebooks"
+        );
+    }
+
+    fn mixed_root(path: &str) -> RootFolder {
+        RootFolder {
+            path: path.into(),
+            name: path.into(),
+            accessible: true,
+            ..RootFolder::default()
+        }
     }
 
     #[test]
-    fn ambiguous_root_inference_fails_closed() {
-        let roots = vec![
-            RootFolder {
-                path: "/books/one".into(),
-                name: "Books One".into(),
-                accessible: true,
-                ebook: false,
-                audiobook: false,
-                is_effective_default_ebook: false,
-                is_effective_default_audiobook: false,
-            },
-            RootFolder {
-                path: "/books/two".into(),
-                name: "Books Two".into(),
-                accessible: true,
-                ebook: false,
-                audiobook: false,
-                is_effective_default_ebook: false,
-                is_effective_default_audiobook: false,
-            },
-        ];
+    fn mixed_roots_resolve_by_nested_settings_presence() {
+        // Mixed roots (folderType 0) carry the nested settings object only
+        // for formats they are configured for; presence is the discriminator
+        // (RootFolderResource.cs:397-411).
+        let mut ebook_root = mixed_root("/library/mixed-ebooks");
+        ebook_root.ebook = Some(json!({"tags": []}));
+        let mut audiobook_root = mixed_root("/library/mixed-audio");
+        audiobook_root.audiobook = Some(json!({"tags": []}));
+        let roots = vec![ebook_root, audiobook_root];
+        assert_eq!(
+            resolve_root(&roots, ChaptarrFormat::Ebook, None).unwrap(),
+            "/library/mixed-ebooks"
+        );
+        assert_eq!(
+            resolve_root(&roots, ChaptarrFormat::Audiobook, None).unwrap(),
+            "/library/mixed-audio"
+        );
+
+        // A lone mixed root not configured for the requested format fails
+        // closed instead of being guessed at.
+        let roots = vec![roots[0].clone()];
+        assert!(resolve_root(&roots, ChaptarrFormat::Audiobook, None).is_err());
+    }
+
+    #[test]
+    fn effective_defaults_break_ties_and_ambiguity_fails_closed() {
+        let mut first = mixed_root("/books/one");
+        first.ebook = Some(json!({"tags": []}));
+        let mut second = mixed_root("/books/two");
+        second.ebook = Some(json!({"tags": []}));
+        let roots = vec![first.clone(), second.clone()];
         assert!(resolve_root(&roots, ChaptarrFormat::Ebook, None).is_err());
+
+        let mut preferred = second.clone();
+        preferred.is_effective_default_ebook = true;
+        let tie_broken = vec![first.clone(), preferred.clone()];
+        assert_eq!(
+            resolve_root(&tie_broken, ChaptarrFormat::Ebook, None).unwrap(),
+            "/books/two"
+        );
+
+        // Two effective defaults are ambiguous again.
+        let mut also_preferred = first;
+        also_preferred.is_effective_default_ebook = true;
+        assert!(resolve_root(&[also_preferred, preferred], ChaptarrFormat::Ebook, None).is_err());
+
+        // The explicit configured path always wins over discrimination.
+        assert_eq!(
+            resolve_root(&roots, ChaptarrFormat::Ebook, Some("/books/one")).unwrap(),
+            "/books/one"
+        );
+        // An explicit name that matches several roots stays ambiguous.
+        let mut twin = second;
+        twin.path = "/books/two-twin".into();
+        twin.name = "Shared Name".into();
+        let mut named = mixed_root("/books/named");
+        named.name = "Shared Name".into();
+        assert!(resolve_root(&[twin, named], ChaptarrFormat::Ebook, Some("Shared Name")).is_err());
+    }
+
+    #[test]
+    fn unknown_folder_types_and_inaccessible_roots_are_never_selectable() {
+        let mut future_type = mixed_root("/library/unknown");
+        future_type.folder_type = 3;
+        future_type.ebook = Some(json!({"tags": []}));
+        assert!(resolve_root(&[future_type], ChaptarrFormat::Ebook, None).is_err());
+
+        let mut offline = mixed_root("/library/offline");
+        offline.accessible = false;
+        offline.ebook = Some(json!({"tags": []}));
+        assert!(resolve_root(&[offline], ChaptarrFormat::Ebook, None).is_err());
     }
 
     #[test]

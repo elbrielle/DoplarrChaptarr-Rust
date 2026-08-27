@@ -19,6 +19,12 @@ state.
   paths) ANDed with quiet author-relevant commands, inside the same
   fail-closed deadline. The triple-fingerprint stability sampling is
   deleted, and a long-settled author passes the gate on the first look.
+- Root folders resolve by their real discriminators: `folderType`
+  (1=Audiobook, 2=Ebook) decides typed roots, nested `ebook`/`audiobook`
+  settings-object presence decides Mixed roots, and `isEffectiveDefault*`
+  breaks ties. The legacy boolean guard, name/path substring inference, and
+  the lone-root fallback are deleted; unknown folder types and unconfigured
+  formats fail closed.
 - Local book rows are matched through a tiered cross-provider identity chain:
   exact `foreignBookId`, then the `goodreadsWorkId`/`goodreadsBookId`
   sidecars, then bare `asin`/`audibleASIN` equality, with the title tier only

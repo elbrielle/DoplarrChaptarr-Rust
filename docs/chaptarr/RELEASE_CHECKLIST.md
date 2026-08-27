@@ -130,6 +130,11 @@ behaviors; the next canary must exercise each one explicitly:
   proceeding promptly afterwards — on both the scan path and the
   no-folder-evidence skip path (no `RescanFolders` ever appearing) — and the
   write-before-settle failure must stay impossible at the deadline.
+- Root resolution keys on `folderType` and nested settings presence (no
+  name inference): the `--check` preflight against the live instance must
+  resolve both formats' roots to the intended paths, and a format the
+  instance has no configured root for must fail closed at startup rather
+  than guess a folder.
 
 Nothing in this sprint graduates the write path out of beta; that requires
 this checklist's mutation proof against a disposable 0.9.936 instance.

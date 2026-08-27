@@ -205,13 +205,17 @@ per-format mirror fields sit alongside the nested objects (`:50-69`):
 `{ebook,audiobook}MonitorExisting`/`MonitorFuture` (nullable, omitted when
 unconfigured), plus sidecar bools and tag lists that always serialize.
 
-Resolution behavior is deliberately unchanged this sprint: exact configured
-path or name first; otherwise explicit boolean flags/effective defaults, then
-conservative name/path inference. Object presence is a valid format
-discriminator per the source above and is scheduled to be consumed by the
-sprint-2 root-folder rework. A root with `accessible: false` is never
-selectable. Do not expose a local root path in a Discord message or public
-issue report.
+Resolution order: an explicitly configured path or name wins (ambiguity
+fails closed); otherwise a root serves a format when its `folderType` says so
+(1=Audiobook, 2=Ebook — decisive by type) or, for Mixed (`0`) roots, when the
+nested settings object for that format is present (absent = unconfigured).
+`isEffectiveDefault*` — populated on `GET /rootfolder` and
+`GET /rootfolder/{id}` (`RootFolderController.cs:177-184,108-112`) — breaks
+ties between several serving roots; anything still ambiguous, and any
+unknown `folderType`, fails closed. The legacy boolean guard and all
+name/path substring inference are gone. A root with `accessible: false` is
+never selectable. Do not expose a local root path in a Discord message or
+public issue report.
 
 ## Book rows
 
