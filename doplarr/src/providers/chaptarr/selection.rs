@@ -442,51 +442,6 @@ pub(super) fn catalog_command_active(commands: &[Value], author_id: i64) -> bool
     })
 }
 
-/// Relevant identity and completeness fields for one catalog row. Watching
-/// these fields prevents a row from looking settled merely because its id was
-/// allocated before Chaptarr populated the rest of its metadata.
-#[derive(Debug, Clone, PartialEq, Eq, PartialOrd, Ord)]
-pub(super) struct BookRowFingerprint {
-    id: i64,
-    foreign_book_id: String,
-    title: String,
-    foreign_edition_id: String,
-    media_type: String,
-    release_date: String,
-    image_count: usize,
-    embedded_edition_count: usize,
-    monitored: bool,
-    ebook_monitored: bool,
-    audiobook_monitored: bool,
-}
-
-/// Order-independent identity and readiness shape of an author's book list,
-/// used to decide when a fresh catalog import has stopped adding, replacing,
-/// or completing rows in place.
-pub(super) fn book_list_fingerprint(rows: &[Value]) -> Vec<BookRowFingerprint> {
-    let mut fingerprint: Vec<BookRowFingerprint> = rows
-        .iter()
-        .map(|row| {
-            let book = parse_book(row).unwrap_or_default();
-            BookRowFingerprint {
-                id: positive_id(row.get("id")).unwrap_or_default(),
-                foreign_book_id: book.foreign_book_id,
-                title: book.title,
-                foreign_edition_id: book.foreign_edition_id,
-                media_type: book.media_type,
-                release_date: book.release_date.unwrap_or_default(),
-                image_count: book.images.len(),
-                embedded_edition_count: book.editions.len(),
-                monitored: book.monitored,
-                ebook_monitored: book.ebook_monitored,
-                audiobook_monitored: book.audiobook_monitored,
-            }
-        })
-        .collect();
-    fingerprint.sort();
-    fingerprint
-}
-
 /// An edition can be mutated or accepted during read-back only when the
 /// structured `readingFormatId` matches the request (1=physical, 2=audio,
 /// 3=ebook; `Edition.cs:58`), or - when it is unset - `isEbook: true` proves
@@ -1905,41 +1860,6 @@ mod tests {
             "body": {"authorIds": [12, 230]}
         }]);
         assert!(catalog_command_active(id_list.as_array().unwrap(), 230));
-    }
-
-    #[test]
-    fn book_list_fingerprints_ignore_order_but_track_membership() {
-        let a = json!({"id": 1, "foreignBookId": "hc:a"});
-        let b = json!({"id": 2, "foreignBookId": "hc:b"});
-        assert_eq!(
-            book_list_fingerprint(&[a.clone(), b.clone()]),
-            book_list_fingerprint(&[b.clone(), a.clone()])
-        );
-        assert_ne!(
-            book_list_fingerprint(std::slice::from_ref(&a)),
-            book_list_fingerprint(&[a, b])
-        );
-
-        let allocated = json!({
-            "id": 3,
-            "foreignBookId": "hc:c",
-            "title": "Catalog Row",
-            "mediaType": "ebook"
-        });
-        let populated = json!({
-            "id": 3,
-            "foreignBookId": "hc:c",
-            "title": "Catalog Row",
-            "mediaType": "ebook",
-            "foreignEditionId": "hc:edition-c",
-            "releaseDate": "2024-01-01",
-            "images": [{"url": "https://covers.example.test/c.jpg"}]
-        });
-        assert_ne!(
-            book_list_fingerprint(&[allocated]),
-            book_list_fingerprint(&[populated]),
-            "in-place metadata population must reset the settle streak"
-        );
     }
 
     #[test]

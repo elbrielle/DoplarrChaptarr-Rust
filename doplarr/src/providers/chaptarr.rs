@@ -33,9 +33,6 @@ const API_PREFIX: &str = "/api/v1";
 const OPEN_LIBRARY_SEARCH: &str = "https://openlibrary.org/search.json";
 const RESOLVE_ATTEMPTS: usize = 20;
 const RESOLVE_DEADLINE: Duration = Duration::from_secs(25);
-/// Consecutive identical book-list samples (with no catalog command in
-/// flight) required before a freshly imported catalog counts as settled.
-const SETTLE_STABLE_SAMPLES: usize = 3;
 const OPEN_LIBRARY_MIN_INTERVAL: Duration = Duration::from_secs(1);
 const OPEN_LIBRARY_CACHE_TTL: Duration = Duration::from_secs(6 * 60 * 60);
 const OPEN_LIBRARY_CACHE_CAPACITY: usize = 128;
@@ -81,40 +78,13 @@ pub struct Chaptarr {
     settle: SettlePacing,
 }
 
-/// Pacing for the new-author catalog-settle wait. A 400+ book author takes
-/// real time to import; any monitor or edition work done before the catalog
-/// settles can be silently reverted by the tail of that import.
+/// Pacing for the post-add settle wait. A 400+ book author takes minutes to
+/// import, and until the one-shot scan handler has run, monitor and edition
+/// writes can be rewritten out from under the request.
 #[derive(Debug, Clone)]
 struct SettlePacing {
     interval: Duration,
     deadline: Duration,
-}
-
-#[derive(Debug, Clone, PartialEq, Eq)]
-struct CatalogFingerprint {
-    books: Vec<BookRowFingerprint>,
-    targets: Vec<TargetFingerprint>,
-}
-
-#[derive(Debug, Clone, PartialEq, Eq, PartialOrd, Ord)]
-struct TargetFingerprint {
-    book_id: i64,
-    release_date: String,
-    foreign_edition_id: String,
-    editions: Vec<EditionFingerprint>,
-}
-
-#[derive(Debug, Clone, PartialEq, Eq, PartialOrd, Ord)]
-struct EditionFingerprint {
-    id: String,
-    foreign_edition_id: String,
-    format: String,
-    reading_format_id: Option<i64>,
-    is_ebook: Option<bool>,
-    language: String,
-    title: String,
-    isbn13: String,
-    asin: String,
 }
 
 impl Default for SettlePacing {
@@ -569,123 +539,51 @@ impl Chaptarr {
         }
     }
 
-    async fn catalog_fingerprint(
-        &self,
-        rows: &[Value],
-        selected: &BookShape,
-        require_target: bool,
-    ) -> Result<Option<CatalogFingerprint>> {
-        let matching: Vec<_> = rows
-            .iter()
-            .filter(|row| local_row_matches_item(row, self.format, selected))
-            .collect();
-        // A target is its row's presence with a matching identity; sparse
-        // metadata (no releaseDate/images) is ordinary 0.9.936 upstream data,
-        // not an unsettled placeholder (Edition.cs - IsFallbackEdition is
-        // dead, no default-* ids are minted).
-        if require_target && matching.is_empty() {
-            return Ok(None);
-        }
-        let mut targets = Vec::new();
-        for row in matching {
-            let Some(book_id) = positive_id(row.get("id")) else {
-                continue;
-            };
-            let mut editions = self
-                .editions_for_book(book_id)
-                .await?
-                .iter()
-                .map(|edition| EditionFingerprint {
-                    id: edition.get("id").map(Value::to_string).unwrap_or_default(),
-                    foreign_edition_id: string_at(edition, "foreignEditionId").to_string(),
-                    format: string_at(edition, "format").to_ascii_lowercase(),
-                    reading_format_id: edition.get("readingFormatId").and_then(Value::as_i64),
-                    is_ebook: edition.get("isEbook").and_then(Value::as_bool),
-                    language: string_at(edition, "language").to_ascii_lowercase(),
-                    title: string_at(edition, "title").to_string(),
-                    isbn13: string_at(edition, "isbn13").to_string(),
-                    asin: string_at(edition, "asin").to_string(),
-                })
-                .collect::<Vec<_>>();
-            editions.sort();
-            targets.push(TargetFingerprint {
-                book_id,
-                release_date: string_at(row, "releaseDate").to_string(),
-                foreign_edition_id: string_at(row, "foreignEditionId").to_string(),
-                editions,
-            });
-        }
-        targets.sort();
-        Ok(Some(CatalogFingerprint {
-            books: book_list_fingerprint(rows),
-            targets,
-        }))
-    }
-
-    /// Block until an author's catalog stops moving: no queued/running
-    /// command that could touch this author, and an unchanged book list plus
-    /// target-edition snapshot across consecutive samples. Monitoring or
-    /// edition selection performed before this point can be silently reverted
-    /// by the tail of the import, which is exactly the failure that strands a
-    /// request.
-    async fn wait_for_catalog_settle(
-        &self,
-        author_id: i64,
-        author_name: &str,
-        selected: &BookShape,
-        require_target: bool,
-    ) -> Result<()> {
+    /// Block until the post-add monitor-rewrite hazard is spent. The hazard
+    /// is one shot: `AuthorScannedHandler` runs when the post-add scan
+    /// completes or is skipped (`AuthorScannedHandler.cs:11-12,58-66`),
+    /// bulk-rewrites the author's book monitor flags per `AddOptions`
+    /// (`:41-43`), re-persists the author (`BookMonitoredService.cs:118-125`,
+    /// which is why every author write stays after this gate), and only
+    /// then clears `AddOptions` (`:50-51`). Nothing else ever clears it, and
+    /// `GET /author/{id}` serializes `addOptions` (`AuthorResource.cs:81,159`)
+    /// with nulls omitted, so a missing key means the handler already ran -
+    /// on the scan path and on the no-folder-evidence skip path
+    /// (`RefreshAuthorService.cs:2170-2178`) alike. Commands must also be
+    /// quiet, because an in-flight refresh may still be about to raise the
+    /// scan event. Both checks are latches, not samples: a settled author
+    /// (`addOptions` long null) passes on the first look.
+    async fn wait_for_catalog_settle(&self, author_id: i64, author_name: &str) -> Result<()> {
         let started = Instant::now();
         let deadline = started + self.settle.deadline;
-        let mut previous_fingerprint = None;
-        let mut stable_samples = 0_usize;
         loop {
-            let commands = match self.commands().await {
-                Ok(commands) => commands,
-                Err(error) => {
-                    warn!(author_id, %error, "Could not poll Chaptarr commands during settle");
-                    // Unknown command state is never equivalent to idle. A
-                    // failed poll invalidates the entire quiet window.
-                    stable_samples = 0;
-                    previous_fingerprint = None;
-                    if Instant::now() + self.settle.interval > deadline {
-                        break;
+            match self
+                .get::<Value>(&format!("/author/{author_id}"), &[])
+                .await
+            {
+                Ok(author) => {
+                    let add_options_spent =
+                        matches!(author.get("addOptions"), None | Some(Value::Null));
+                    if add_options_spent {
+                        match self.commands().await {
+                            Ok(commands) if !catalog_command_active(&commands, author_id) => {
+                                info!(
+                                    author_id,
+                                    elapsed_secs = started.elapsed().as_secs(),
+                                    "Chaptarr author settled"
+                                );
+                                return Ok(());
+                            }
+                            Ok(_) => {}
+                            Err(error) => {
+                                // Unknown command state is never idle.
+                                warn!(author_id, %error, "Could not poll Chaptarr commands during settle");
+                            }
+                        }
                     }
-                    sleep(self.settle.interval).await;
-                    continue;
                 }
-            };
-            let busy = catalog_command_active(&commands, author_id);
-            if busy {
-                stable_samples = 0;
-                previous_fingerprint = None;
-            } else {
-                let rows = self.books_for_author(author_id).await?;
-                let fingerprint = if rows.is_empty() && require_target {
-                    None
-                } else {
-                    self.catalog_fingerprint(&rows, selected, require_target)
-                        .await?
-                };
-                if let Some(fingerprint) = fingerprint {
-                    if previous_fingerprint.as_ref() == Some(&fingerprint) {
-                        stable_samples += 1;
-                    } else {
-                        stable_samples = 1;
-                    }
-                    previous_fingerprint = Some(fingerprint);
-                    if stable_samples >= SETTLE_STABLE_SAMPLES {
-                        info!(
-                            author_id,
-                            books = rows.len(),
-                            elapsed_secs = started.elapsed().as_secs(),
-                            "Chaptarr catalog settled"
-                        );
-                        return Ok(());
-                    }
-                } else {
-                    stable_samples = 0;
-                    previous_fingerprint = None;
+                Err(error) => {
+                    warn!(author_id, %error, "Could not poll the Chaptarr author during settle");
                 }
             }
             if Instant::now() + self.settle.interval > deadline {
@@ -800,6 +698,9 @@ impl Chaptarr {
         Ok(())
     }
 
+    /// This full-resource PUT cannot re-arm or disarm the settle latch:
+    /// the update path unconditionally restores the stored `AddOptions`
+    /// (`AuthorResource.cs:571-573`, `AuthorService.cs:634-636`).
     async fn enable_author_format(&self, author_id: i64) -> Result<()> {
         let endpoint = format!("/author/{author_id}");
         let mut author: Value = self.get(&endpoint, &[]).await?;
@@ -1320,29 +1221,19 @@ impl MediaBackend for Chaptarr {
             .and_then(|a| positive_id(a.get("id")))
             .context("Chaptarr could not resolve the requested author")?;
         if author_added {
-            // A brand-new author's catalog import continues long after the
-            // target row first appears. Monitoring before it settles is how a
-            // request dies silently, so nothing below runs until it has.
-            self.wait_for_catalog_settle(
-                author_id,
-                &item.book.author.author_name,
-                &item.book,
-                true,
-            )
-            .await?;
+            // A brand-new author's monitor flags are rewritten once by the
+            // scan handler while addOptions is still set. Monitoring before
+            // that latch clears is how a request dies silently, so nothing
+            // below runs until it has.
+            self.wait_for_catalog_settle(author_id, &item.book.author.author_name)
+                .await?;
         } else {
-            // A retry sees an existing author even when the original catalog
-            // import is still running. Even an idle command sample is not
-            // enough: live imports can mutate editions after that command
-            // disappears. Every existing-author write therefore requires the
-            // full three-snapshot catalog/edition stability gate.
-            self.wait_for_catalog_settle(
-                author_id,
-                &item.book.author.author_name,
-                &item.book,
-                book.is_some(),
-            )
-            .await?;
+            // A retry can land while the original add's import is still
+            // running, and the same one-shot rewrite hazard applies until
+            // addOptions clears. For a long-settled author the composite
+            // check passes on the first look.
+            self.wait_for_catalog_settle(author_id, &item.book.author.author_name)
+                .await?;
             let (refreshed_author, refreshed_book, refreshed_rows) =
                 self.locate_existing(&item).await?;
             if let Some(refreshed_author) = refreshed_author {
@@ -1370,16 +1261,10 @@ impl MediaBackend for Chaptarr {
                     .context("Chaptarr could not resolve the requested author")?;
                 let body = self.existing_author_book_body(&item, local_author)?;
                 self.add_book(&item.book.title, &body).await?;
-                // Adding one work can itself start metadata work. Do not let
-                // the first visible row escape into monitoring; require the
-                // newly added target and its edition list to settle first.
-                self.wait_for_catalog_settle(
-                    author_id,
-                    &item.book.author.author_name,
-                    &item.book,
-                    true,
-                )
-                .await?;
+                // Adding one work can queue metadata commands of its own;
+                // wait until they are quiet before monitoring anything.
+                self.wait_for_catalog_settle(author_id, &item.book.author.author_name)
+                    .await?;
             }
         }
         if book.is_none() {
@@ -1777,6 +1662,10 @@ mod tests {
                 .iter()
                 .all(|edition| edition["monitored"] == false)
         );
+        // A SpecificBook monitor type with an empty booksToMonitor list
+        // throws server-side (BookMonitoredService.cs:113-114); the add
+        // bodies never send the field.
+        assert!(!body.to_string().contains("booksToMonitor"));
     }
 
     #[test]
@@ -1823,6 +1712,10 @@ mod tests {
         assert_eq!(body["ebookMonitored"], false);
         assert_eq!(body["audiobookMonitored"], false);
         assert_eq!(body["author"]["audiobookMonitorFuture"], true);
+        // A SpecificBook monitor type with an empty booksToMonitor list
+        // throws server-side (BookMonitoredService.cs:113-114); the add
+        // bodies never send the field.
+        assert!(!body.to_string().contains("booksToMonitor"));
     }
 
     #[test]
@@ -2018,21 +1911,21 @@ mod tests {
             "monitored": true,
             "manualAdd": true
         });
+        let mut author_settling = author.clone();
+        author_settling.as_object_mut().unwrap().insert(
+            "addOptions".into(),
+            json!({"monitor": "none", "searchForMissingBooks": false}),
+        );
         let responses = vec![
             "[]".to_string(),
             json!({"authorId": 7001}).to_string(),
             author.to_string(),
-            // Catalog settle: three stable samples of commands, book rows,
-            // and the target's authoritative edition list.
+            // Settle: a still-set addOptions holds the gate (without even
+            // polling commands); once the scan handler has cleared it and
+            // commands are quiet, one composite look passes.
+            author_settling.to_string(),
+            author.to_string(),
             "[]".to_string(),
-            json!([audiobook.clone()]).to_string(),
-            json!([audio_edition.clone()]).to_string(),
-            "[]".to_string(),
-            json!([audiobook.clone()]).to_string(),
-            json!([audio_edition.clone()]).to_string(),
-            "[]".to_string(),
-            json!([audiobook.clone()]).to_string(),
-            json!([audio_edition.clone()]).to_string(),
             // Target resolution, then edition-aware pocket resolution.
             json!([audiobook.clone()]).to_string(),
             json!([audiobook]).to_string(),
@@ -2076,15 +1969,11 @@ mod tests {
                 "GET /api/v1/author HTTP/1.1",
                 "POST /api/v1/book HTTP/1.1",
                 "GET /api/v1/author/7001 HTTP/1.1",
+                // The settling probe holds without a command poll; the next
+                // probe finds addOptions spent and commands quiet.
+                "GET /api/v1/author/7001 HTTP/1.1",
+                "GET /api/v1/author/7001 HTTP/1.1",
                 "GET /api/v1/command HTTP/1.1",
-                "GET /api/v1/book?authorId=7001 HTTP/1.1",
-                "GET /api/v1/edition?bookId=5101 HTTP/1.1",
-                "GET /api/v1/command HTTP/1.1",
-                "GET /api/v1/book?authorId=7001 HTTP/1.1",
-                "GET /api/v1/edition?bookId=5101 HTTP/1.1",
-                "GET /api/v1/command HTTP/1.1",
-                "GET /api/v1/book?authorId=7001 HTTP/1.1",
-                "GET /api/v1/edition?bookId=5101 HTTP/1.1",
                 "GET /api/v1/book?authorId=7001 HTTP/1.1",
                 "GET /api/v1/book?authorId=7001 HTTP/1.1",
                 "GET /api/v1/edition?bookId=5101 HTTP/1.1",
@@ -2104,13 +1993,13 @@ mod tests {
         assert!(recorded[1].contains("\"audiobookMonitorFuture\":true"));
         // The edition-select PUT mirrors the Chaptarr UI: complete book body,
         // anyEditionOk off, and exactly one monitored, manually-added edition.
-        assert!(recorded[16].contains("\"anyEditionOk\":false"));
-        assert!(recorded[16].contains("\"manualAdd\":true"));
-        assert_eq!(recorded[16].matches("\"monitored\":true").count(), 1);
-        assert!(recorded[17].contains("\"bookIds\":[5101]"));
-        assert!(recorded[17].contains("\"monitored\":true"));
-        assert!(recorded[20].contains("\"name\":\"BookSearch\""));
-        assert!(recorded[20].contains("\"bookIds\":[5101]"));
+        assert!(recorded[10].contains("\"anyEditionOk\":false"));
+        assert!(recorded[10].contains("\"manualAdd\":true"));
+        assert_eq!(recorded[10].matches("\"monitored\":true").count(), 1);
+        assert!(recorded[11].contains("\"bookIds\":[5101]"));
+        assert!(recorded[11].contains("\"monitored\":true"));
+        assert!(recorded[14].contains("\"name\":\"BookSearch\""));
+        assert!(recorded[14].contains("\"bookIds\":[5101]"));
     }
 
     #[tokio::test]
@@ -2171,19 +2060,14 @@ mod tests {
             "monitored": true,
             "manualAdd": true
         });
-        let mut responses = vec![
+        let responses = vec![
             "[]".to_string(),
             json!({"authorId": 7001}).to_string(),
             author.to_string(),
-        ];
-        for _ in 0..SETTLE_STABLE_SAMPLES {
-            responses.extend([
-                "[]".to_string(),
-                json!([sparse_book.clone()]).to_string(),
-                json!([kindle_edition.clone()]).to_string(),
-            ]);
-        }
-        responses.extend([
+            // Settle: addOptions already spent and commands quiet - one
+            // composite look passes.
+            author.to_string(),
+            "[]".to_string(),
             json!([sparse_book.clone()]).to_string(),
             json!([sparse_book]).to_string(),
             json!([kindle_edition]).to_string(),
@@ -2193,7 +2077,7 @@ mod tests {
             monitored_sparse_book.to_string(),
             json!([monitored_kindle_edition]).to_string(),
             COMMAND_RESPONSE.to_string(),
-        ]);
+        ];
         let (base_url, requests, server) = mock_api(responses).await;
         let mut chaptarr = backend(ChaptarrFormat::Ebook);
         chaptarr.base_url = base_url;
@@ -2224,15 +2108,8 @@ mod tests {
                 "GET /api/v1/author HTTP/1.1",
                 "POST /api/v1/book HTTP/1.1",
                 "GET /api/v1/author/7001 HTTP/1.1",
+                "GET /api/v1/author/7001 HTTP/1.1",
                 "GET /api/v1/command HTTP/1.1",
-                "GET /api/v1/book?authorId=7001 HTTP/1.1",
-                "GET /api/v1/edition?bookId=4199 HTTP/1.1",
-                "GET /api/v1/command HTTP/1.1",
-                "GET /api/v1/book?authorId=7001 HTTP/1.1",
-                "GET /api/v1/edition?bookId=4199 HTTP/1.1",
-                "GET /api/v1/command HTTP/1.1",
-                "GET /api/v1/book?authorId=7001 HTTP/1.1",
-                "GET /api/v1/edition?bookId=4199 HTTP/1.1",
                 "GET /api/v1/book?authorId=7001 HTTP/1.1",
                 "GET /api/v1/book?authorId=7001 HTTP/1.1",
                 "GET /api/v1/edition?bookId=4199 HTTP/1.1",
@@ -2250,12 +2127,12 @@ mod tests {
                 .all(|request| !request.contains("RefreshAuthor")),
             "no code path may issue RefreshAuthor"
         );
-        assert!(recorded[16].contains("\"anyEditionOk\":false"));
-        assert!(recorded[16].contains("\"manualAdd\":true"));
-        assert_eq!(recorded[16].matches("\"monitored\":true").count(), 1);
-        assert!(recorded[17].contains("\"bookIds\":[4199]"));
-        assert!(recorded[20].contains("\"name\":\"BookSearch\""));
-        assert!(recorded[20].contains("\"bookIds\":[4199]"));
+        assert!(recorded[9].contains("\"anyEditionOk\":false"));
+        assert!(recorded[9].contains("\"manualAdd\":true"));
+        assert_eq!(recorded[9].matches("\"monitored\":true").count(), 1);
+        assert!(recorded[10].contains("\"bookIds\":[4199]"));
+        assert!(recorded[13].contains("\"name\":\"BookSearch\""));
+        assert!(recorded[13].contains("\"bookIds\":[4199]"));
     }
 
     #[tokio::test]
@@ -2440,7 +2317,71 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn new_author_request_fails_loudly_while_catalog_is_importing() {
+    async fn new_author_request_fails_loudly_while_add_options_is_still_set() {
+        let author = json!({
+            "id": 7001,
+            "authorName": "Mara Vale",
+            "foreignAuthorId": "hc:author-1001",
+            "monitored": true,
+            "ebookMonitorFuture": false,
+            "audiobookMonitorFuture": true
+        });
+        let mut author_settling = author.clone();
+        author_settling.as_object_mut().unwrap().insert(
+            "addOptions".into(),
+            json!({"monitor": "none", "searchForMissingBooks": false}),
+        );
+        let responses = vec![
+            "[]".to_string(),
+            json!({"authorId": 7001}).to_string(),
+            author.to_string(),
+            author_settling.to_string(),
+        ];
+        let (base_url, requests, server) = mock_api(responses).await;
+        let mut chaptarr = backend(ChaptarrFormat::Audiobook);
+        chaptarr.settle.deadline = Duration::ZERO;
+        chaptarr.base_url = base_url;
+        chaptarr.client = reqwest::Client::builder()
+            .timeout(Duration::from_secs(2))
+            .build()
+            .unwrap();
+        let mut item = lookup_item();
+        item.existing_book_id = None;
+
+        let error = chaptarr
+            .request(Vec::new(), Box::new(item), 1234)
+            .await
+            .unwrap_err();
+        assert!(error.downcast_ref::<UserFacingError>().is_some());
+        assert!(error.to_string().contains("NOT completed"));
+        timeout(Duration::from_secs(2), server)
+            .await
+            .expect("mock server should finish")
+            .unwrap();
+
+        // The author add is the only mutation: the scan handler has not run
+        // yet (addOptions still set), so nothing was monitored, no edition
+        // was selected, and no search was queued.
+        let recorded = requests.lock().await;
+        let lines: Vec<_> = recorded
+            .iter()
+            .map(|request| request_line(request))
+            .collect();
+        assert_eq!(
+            lines,
+            vec![
+                "GET /api/v1/author HTTP/1.1",
+                "POST /api/v1/book HTTP/1.1",
+                "GET /api/v1/author/7001 HTTP/1.1",
+                "GET /api/v1/author/7001 HTTP/1.1",
+            ]
+        );
+    }
+
+    #[tokio::test]
+    async fn new_author_request_fails_loudly_while_a_refresh_is_still_active() {
+        // addOptions can read as spent while the refresh that will raise the
+        // scan event is still queued; the ANDed command-quiet leg holds.
         let author = json!({
             "id": 7001,
             "authorName": "Mara Vale",
@@ -2457,6 +2398,7 @@ mod tests {
         let responses = vec![
             "[]".to_string(),
             json!({"authorId": 7001}).to_string(),
+            author.to_string(),
             author.to_string(),
             refresh_in_flight.to_string(),
         ];
@@ -2482,8 +2424,6 @@ mod tests {
             .expect("mock server should finish")
             .unwrap();
 
-        // The author add is the only mutation: nothing was monitored, no
-        // edition was selected, and no search was queued.
         let recorded = requests.lock().await;
         let lines: Vec<_> = recorded
             .iter()
@@ -2494,6 +2434,7 @@ mod tests {
             vec![
                 "GET /api/v1/author HTTP/1.1",
                 "POST /api/v1/book HTTP/1.1",
+                "GET /api/v1/author/7001 HTTP/1.1",
                 "GET /api/v1/author/7001 HTTP/1.1",
                 "GET /api/v1/command HTTP/1.1",
             ]
@@ -2546,21 +2487,15 @@ mod tests {
             "foreignEditionId": "hc:edition-1001",
             "images": [{"coverType": "cover", "url": "https://covers.example.test/book.jpg"}]
         });
-        let mut responses = vec![
+        let responses = vec![
             json!([author.clone()]).to_string(),
             json!([book.clone()]).to_string(),
             // Exact-search preflight runs even when import reverted both
             // monitor flags.
             "[]".to_string(),
-        ];
-        for _ in 0..SETTLE_STABLE_SAMPLES {
-            responses.extend([
-                "[]".to_string(),
-                json!([book.clone()]).to_string(),
-                json!([edition.clone()]).to_string(),
-            ]);
-        }
-        responses.extend([
+            // Settle: addOptions spent, commands quiet.
+            author.to_string(),
+            "[]".to_string(),
             json!([author.clone()]).to_string(),
             json!([book.clone()]).to_string(),
             "[]".to_string(),
@@ -2570,7 +2505,7 @@ mod tests {
             "{}".to_string(),
             "{}".to_string(),
             failed_readback.to_string(),
-        ]);
+        ];
         let (base_url, requests, server) = mock_api(responses).await;
         let mut chaptarr = backend(ChaptarrFormat::Ebook);
         chaptarr.base_url = base_url;
@@ -2656,80 +2591,39 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn catalog_settle_resets_for_active_changed_and_unknown_command_state() {
-        let active_refresh = json!([{
+    async fn settle_gate_passes_on_the_scan_skip_path() {
+        // No folder evidence: RefreshAuthor raises AuthorScanSkippedEvent
+        // (RefreshAuthorService.cs:2170-2178) before any RescanFolders is
+        // pushed - the handler still runs and clears addOptions, so the gate
+        // must pass with only a completed RefreshAuthor in command history.
+        let author = json!({
+            "id": 7001,
+            "authorName": "Mara Vale",
+            "foreignAuthorId": "hc:author-1001",
+            "monitored": true
+        });
+        let mut author_settling = author.clone();
+        author_settling.as_object_mut().unwrap().insert(
+            "addOptions".into(),
+            json!({"monitor": "none", "searchForMissingBooks": false}),
+        );
+        let completed_refresh = json!([{
             "id": 7201,
             "name": "RefreshAuthor",
-            "status": "started",
+            "status": "completed",
             "body": {"authorId": 7001}
         }]);
-        let book = json!({
-            "id": 4101,
-            "authorId": 7001,
-            "title": "The Clockwork Orchard",
-            "foreignBookId": "gr:work-1001",
-            "mediaType": "ebook",
-            "monitored": false,
-            "ebookMonitored": false,
-            "hasFiles": false,
-            "releaseDate": "2024-01-01",
-            "foreignEditionId": "hc:edition-1001",
-            "images": [{"coverType": "cover", "url": "https://covers.example.test/book.jpg"}]
-        });
-        let edition_one = json!([{
-            "id": 8101,
-            "bookId": 4101,
-            "title": "The Clockwork Orchard",
-            "foreignEditionId": "hc:edition-1001",
-            "format": "Kindle Edition", "readingFormatId": 3,
-            "isEbook": true,
-            "language": "eng"
-        }]);
-        let edition_two = json!([
-            {
-                "id": 8101,
-                "bookId": 4101,
-                "title": "The Clockwork Orchard",
-                "foreignEditionId": "hc:edition-1001",
-                "format": "Kindle Edition", "readingFormatId": 3,
-                "isEbook": true,
-                "language": "eng"
-            },
-            {
-                "id": 8102,
-                "bookId": 4101,
-                "title": "The Clockwork Orchard",
-                "foreignEditionId": "hc:edition-1002",
-                "format": "Kindle Edition", "readingFormatId": 3,
-                "isEbook": true,
-                "language": "eng"
-            }
-        ]);
-        let mut responses = vec![active_refresh.to_string()];
-        for editions in [&edition_one, &edition_two, &edition_two] {
-            responses.extend([
-                "[]".to_string(),
-                json!([book.clone()]).to_string(),
-                editions.to_string(),
-            ]);
-        }
-        // Invalid JSON makes the command poll unknown and must erase the two
-        // quiet samples already accumulated for edition_two.
-        responses.push("not-json".to_string());
-        for _ in 0..SETTLE_STABLE_SAMPLES {
-            responses.extend([
-                "[]".to_string(),
-                json!([book.clone()]).to_string(),
-                edition_two.to_string(),
-            ]);
-        }
+        let responses = vec![
+            author_settling.to_string(),
+            author.to_string(),
+            completed_refresh.to_string(),
+        ];
         let (base_url, requests, server) = mock_api(responses).await;
         let mut chaptarr = backend(ChaptarrFormat::Ebook);
         chaptarr.base_url = base_url;
-        let item = lookup_item();
 
         chaptarr
-            .wait_for_catalog_settle(7001, "Mara Vale", &item.book, true)
+            .wait_for_catalog_settle(7001, "Mara Vale")
             .await
             .unwrap();
         timeout(Duration::from_secs(2), server)
@@ -2742,18 +2636,74 @@ mod tests {
             .map(|request| request_line(request))
             .collect();
         assert_eq!(
-            lines
-                .iter()
-                .filter(|line| **line == "GET /api/v1/command HTTP/1.1")
-                .count(),
-            8
+            lines,
+            vec![
+                "GET /api/v1/author/7001 HTTP/1.1",
+                "GET /api/v1/author/7001 HTTP/1.1",
+                "GET /api/v1/command HTTP/1.1",
+            ]
         );
+        assert!(
+            recorded.iter().all(|request| !request.contains("Rescan")),
+            "the skip path never sees a RescanFolders command"
+        );
+    }
+
+    #[tokio::test]
+    async fn settle_gate_holds_through_author_poll_and_command_uncertainty() {
+        let author = json!({
+            "id": 7001,
+            "authorName": "Mara Vale",
+            "foreignAuthorId": "hc:author-1001",
+            "monitored": true
+        });
+        let active_refresh = json!([{
+            "id": 7201,
+            "name": "RefreshAuthor",
+            "status": "started",
+            "body": {"authorId": 7001}
+        }]);
+        let responses = vec![
+            // An unreadable author poll is never treated as a spent latch.
+            "not-json".to_string(),
+            // A scoped active refresh holds the quiet leg.
+            author.to_string(),
+            active_refresh.to_string(),
+            // An unreadable command poll is never treated as idle.
+            author.to_string(),
+            "not-json".to_string(),
+            // Both legs clean: settled.
+            author.to_string(),
+            "[]".to_string(),
+        ];
+        let (base_url, requests, server) = mock_api(responses).await;
+        let mut chaptarr = backend(ChaptarrFormat::Ebook);
+        chaptarr.base_url = base_url;
+
+        chaptarr
+            .wait_for_catalog_settle(7001, "Mara Vale")
+            .await
+            .unwrap();
+        timeout(Duration::from_secs(2), server)
+            .await
+            .expect("mock server should finish")
+            .unwrap();
+        let recorded = requests.lock().await;
+        let lines: Vec<_> = recorded
+            .iter()
+            .map(|request| request_line(request))
+            .collect();
         assert_eq!(
-            lines
-                .iter()
-                .filter(|line| **line == "GET /api/v1/edition?bookId=4101 HTTP/1.1")
-                .count(),
-            6
+            lines,
+            vec![
+                "GET /api/v1/author/7001 HTTP/1.1",
+                "GET /api/v1/author/7001 HTTP/1.1",
+                "GET /api/v1/command HTTP/1.1",
+                "GET /api/v1/author/7001 HTTP/1.1",
+                "GET /api/v1/command HTTP/1.1",
+                "GET /api/v1/author/7001 HTTP/1.1",
+                "GET /api/v1/command HTTP/1.1",
+            ]
         );
         assert!(lines.iter().all(|line| line.starts_with("GET ")));
     }
@@ -2824,15 +2774,12 @@ mod tests {
             "monitored": true,
             "manualAdd": true
         });
-        let mut responses = vec![
+        let responses = vec![
             json!([author_unmonitored.clone()]).to_string(),
             "[]".to_string(),
-        ];
-        // Even an empty existing catalog requires three quiet snapshots.
-        for _ in 0..SETTLE_STABLE_SAMPLES {
-            responses.extend(["[]".to_string(), "[]".to_string()]);
-        }
-        responses.extend([
+            // Settle for the existing author: instant composite pass.
+            author_unmonitored.to_string(),
+            "[]".to_string(),
             json!([author_unmonitored.clone()]).to_string(),
             "[]".to_string(),
             json!({
@@ -2846,17 +2793,10 @@ mod tests {
                 "images": [{"url": "https://covers.example.test/wrong.jpg"}]
             })
             .to_string(),
-        ]);
-        // POST /book can start its own import tail. The target row and
-        // authoritative editions must be unchanged for the full window.
-        for _ in 0..SETTLE_STABLE_SAMPLES {
-            responses.extend([
-                "[]".to_string(),
-                json!([resolved_book.clone()]).to_string(),
-                json!([ebook_edition.clone()]).to_string(),
-            ]);
-        }
-        responses.extend([
+            // POST /book can queue metadata commands of its own; the gate
+            // re-checks before anything is monitored.
+            author_unmonitored.to_string(),
+            "[]".to_string(),
             json!([resolved_book.clone()]).to_string(),
             json!([resolved_book]).to_string(),
             json!([ebook_edition]).to_string(),
@@ -2868,7 +2808,7 @@ mod tests {
             monitored_book.to_string(),
             json!([monitored_ebook_edition]).to_string(),
             COMMAND_RESPONSE.to_string(),
-        ]);
+        ];
         let (base_url, requests, server) = mock_api(responses).await;
         let mut chaptarr = backend(ChaptarrFormat::Ebook);
         chaptarr.base_url = base_url;
@@ -2893,32 +2833,39 @@ mod tests {
             .iter()
             .map(|request| request_line(request))
             .collect();
-        assert_eq!(lines.len(), 31);
-        assert_eq!(lines[10], "POST /api/v1/book HTTP/1.1");
-        assert!(recorded[10].contains("\"foreignBookId\":\"gr:work-1001\""));
-        assert!(recorded[10].contains("\"monitored\":false"));
-        assert!(recorded[10].contains("\"ebookMonitored\":false"));
-        assert!(recorded[10].contains("\"audiobookMonitored\":false"));
-        assert!(!recorded[10].contains("remoteCover"));
-        assert!(recorded[26].contains("\"anyEditionOk\":false"));
-        assert!(recorded[26].contains("\"manualAdd\":true"));
-        assert_eq!(recorded[26].matches("\"monitored\":true").count(), 1);
-        assert_eq!(lines[27], "PUT /api/v1/book/monitor HTTP/1.1");
-        assert_eq!(lines[30], "POST /api/v1/command HTTP/1.1");
         assert_eq!(
-            lines[11..27]
-                .iter()
-                .filter(|line| **line == "GET /api/v1/edition?bookId=4101 HTTP/1.1")
-                .count(),
-            4
+            lines,
+            vec![
+                "GET /api/v1/author HTTP/1.1",
+                "GET /api/v1/book?authorId=7001 HTTP/1.1",
+                "GET /api/v1/author/7001 HTTP/1.1",
+                "GET /api/v1/command HTTP/1.1",
+                "GET /api/v1/author HTTP/1.1",
+                "GET /api/v1/book?authorId=7001 HTTP/1.1",
+                "POST /api/v1/book HTTP/1.1",
+                "GET /api/v1/author/7001 HTTP/1.1",
+                "GET /api/v1/command HTTP/1.1",
+                "GET /api/v1/book?authorId=7001 HTTP/1.1",
+                "GET /api/v1/book?authorId=7001 HTTP/1.1",
+                "GET /api/v1/edition?bookId=4101 HTTP/1.1",
+                "GET /api/v1/author/7001 HTTP/1.1",
+                "PUT /api/v1/author/7001 HTTP/1.1",
+                "GET /api/v1/author/7001 HTTP/1.1",
+                "PUT /api/v1/book/4101 HTTP/1.1",
+                "PUT /api/v1/book/monitor HTTP/1.1",
+                "GET /api/v1/book/4101 HTTP/1.1",
+                "GET /api/v1/edition?bookId=4101 HTTP/1.1",
+                "POST /api/v1/command HTTP/1.1",
+            ]
         );
-        assert_eq!(
-            lines
-                .iter()
-                .filter(|line| **line == "POST /api/v1/command HTTP/1.1")
-                .count(),
-            1
-        );
+        assert!(recorded[6].contains("\"foreignBookId\":\"gr:work-1001\""));
+        assert!(recorded[6].contains("\"monitored\":false"));
+        assert!(recorded[6].contains("\"ebookMonitored\":false"));
+        assert!(recorded[6].contains("\"audiobookMonitored\":false"));
+        assert!(!recorded[6].contains("remoteCover"));
+        assert!(recorded[15].contains("\"anyEditionOk\":false"));
+        assert!(recorded[15].contains("\"manualAdd\":true"));
+        assert_eq!(recorded[15].matches("\"monitored\":true").count(), 1);
     }
 
     #[tokio::test]
@@ -2979,19 +2926,13 @@ mod tests {
             "monitored": true,
             "manualAdd": true
         });
-        let mut responses = vec![
+        let responses = vec![
             json!([author.clone()]).to_string(),
             json!([unmonitored_book.clone()]).to_string(),
             "[]".to_string(),
-        ];
-        for _ in 0..SETTLE_STABLE_SAMPLES {
-            responses.extend([
-                "[]".to_string(),
-                json!([unmonitored_book.clone()]).to_string(),
-                json!([unmonitored_edition.clone()]).to_string(),
-            ]);
-        }
-        responses.extend([
+            // Settle: instant composite pass for a long-settled author.
+            author.to_string(),
+            "[]".to_string(),
             json!([author.clone()]).to_string(),
             json!([unmonitored_book.clone()]).to_string(),
             "[]".to_string(),
@@ -3005,20 +2946,13 @@ mod tests {
             // HTTP success without a command identity must not produce a
             // Discord success or enter the recent-ack dedupe cache.
             "{}".to_string(),
+            // The retry proves no exact search is active, re-passes the
+            // settle gate, and repairs the persisted partial state.
             json!([author.clone()]).to_string(),
             json!([monitored_book.clone()]).to_string(),
-            // The retry proves no exact search is active, then runs the full
-            // stability gate before repairing the persisted partial state.
             "[]".to_string(),
-        ]);
-        for _ in 0..SETTLE_STABLE_SAMPLES {
-            responses.extend([
-                "[]".to_string(),
-                json!([monitored_book.clone()]).to_string(),
-                json!([monitored_edition.clone()]).to_string(),
-            ]);
-        }
-        responses.extend([
+            author.to_string(),
+            "[]".to_string(),
             json!([author.clone()]).to_string(),
             json!([monitored_book.clone()]).to_string(),
             "[]".to_string(),
@@ -3030,7 +2964,7 @@ mod tests {
             monitored_book.to_string(),
             json!([monitored_edition]).to_string(),
             json!({"id": 7102, "name": "BookSearch", "status": "queued"}).to_string(),
-        ]);
+        ];
         let (base_url, requests, server) = mock_api(responses).await;
         let mut chaptarr = backend(ChaptarrFormat::Ebook);
         chaptarr.base_url = base_url;
@@ -3062,20 +2996,20 @@ mod tests {
             .iter()
             .map(|request| request_line(request))
             .collect();
-        assert_eq!(lines.len(), 46);
+        assert_eq!(lines.len(), 32);
         assert_eq!(
             lines
                 .iter()
                 .filter(|line| **line == "GET /api/v1/command HTTP/1.1")
                 .count(),
-            10
+            6
         );
         assert_eq!(
             lines
                 .iter()
                 .filter(|line| **line == "GET /api/v1/edition?bookId=4101 HTTP/1.1")
                 .count(),
-            10
+            4
         );
         assert_eq!(
             lines
@@ -3103,11 +3037,11 @@ mod tests {
                 .iter()
                 .all(|line| *line != "PUT /api/v1/author/7001 HTTP/1.1")
         );
-        assert!(recorded[45].contains("\"name\":\"BookSearch\""));
+        assert!(recorded[31].contains("\"name\":\"BookSearch\""));
     }
 
     #[tokio::test]
-    async fn concurrent_existing_work_waits_for_edition_stability_and_queues_one_search() {
+    async fn concurrent_requests_for_one_work_queue_exactly_one_search() {
         let author_unmonitored = json!({
             "id": 7001,
             "authorName": "Mara Vale",
@@ -3183,28 +3117,18 @@ mod tests {
             "monitored": false,
             "manualAdd": false
         });
-        let expanded_editions = json!([ebook_edition.clone(), second_edition.clone()]);
+        let expanded_editions = json!([ebook_edition, second_edition.clone()]);
         let monitored_editions = json!([monitored_ebook_edition, second_edition]);
-        let mut responses = vec![
+        let responses = vec![
+            // The winner of the per-work lock runs the whole flow.
             json!([author_unmonitored.clone()]).to_string(),
             json!([book_unmonitored.clone()]).to_string(),
-            // Exact-search preflight must run before the longer stability
-            // window even though this row is currently unmonitored.
+            // Exact-search preflight runs even though this row is
+            // currently unmonitored.
             "[]".to_string(),
-            // The command is idle throughout, but the edition list grows
-            // after the first sample. Stability must restart at that point.
+            // Settle: instant composite pass.
+            author_unmonitored.to_string(),
             "[]".to_string(),
-            json!([book_unmonitored.clone()]).to_string(),
-            json!([ebook_edition]).to_string(),
-        ];
-        for _ in 0..SETTLE_STABLE_SAMPLES {
-            responses.extend([
-                "[]".to_string(),
-                json!([book_unmonitored.clone()]).to_string(),
-                expanded_editions.to_string(),
-            ]);
-        }
-        responses.extend([
             json!([author_unmonitored.clone()]).to_string(),
             json!([book_unmonitored.clone()]).to_string(),
             "[]".to_string(),
@@ -3218,9 +3142,11 @@ mod tests {
             book_monitored.to_string(),
             monitored_editions.to_string(),
             COMMAND_RESPONSE.to_string(),
+            // The loser re-reads inside the lock and stops on the winner's
+            // acknowledged search before making any request of its own.
             json!([author_monitored.clone()]).to_string(),
             json!([book_monitored.clone()]).to_string(),
-        ]);
+        ];
         let (base_url, requests, server) = mock_api(responses).await;
         let mut chaptarr = backend(ChaptarrFormat::Ebook);
         chaptarr.base_url = base_url;
@@ -3238,6 +3164,11 @@ mod tests {
             chaptarr.request(Vec::new(), Box::new(second_item), 5678),
         );
         assert_ne!(first.is_ok(), second.is_ok());
+        let error = [first, second]
+            .into_iter()
+            .find_map(Result::err)
+            .expect("one request must lose");
+        assert!(error.to_string().contains("already requested"));
         timeout(Duration::from_secs(2), server)
             .await
             .expect("mock server should finish")
@@ -3248,17 +3179,17 @@ mod tests {
             .iter()
             .map(|request| request_line(request))
             .collect();
-        assert_eq!(lines.len(), 30);
+        assert_eq!(lines.len(), 20);
         assert_eq!(
             lines
                 .iter()
                 .filter(|line| **line == "GET /api/v1/edition?bookId=4101 HTTP/1.1")
                 .count(),
-            6
+            2
         );
-        assert!(recorded[24].contains("\"bookIds\":[4101]"));
-        assert!(recorded[24].contains("\"monitored\":true"));
-        assert!(recorded[27].contains("\"name\":\"BookSearch\""));
+        assert!(recorded[14].contains("\"bookIds\":[4101]"));
+        assert!(recorded[14].contains("\"monitored\":true"));
+        assert!(recorded[17].contains("\"name\":\"BookSearch\""));
         assert_eq!(
             lines
                 .iter()

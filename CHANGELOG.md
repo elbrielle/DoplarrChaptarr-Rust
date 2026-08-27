@@ -13,6 +13,12 @@ state.
 
 ### Changed - Simplification & identity (Sprint 2)
 
+- The catalog-settle gate is rewritten around the server's actual
+  scan-completion signal: `addOptions` absent on `GET /author/{id}` (the
+  one-shot `AuthorScannedHandler` latch, spent on both the scan and skip
+  paths) ANDed with quiet author-relevant commands, inside the same
+  fail-closed deadline. The triple-fingerprint stability sampling is
+  deleted, and a long-settled author passes the gate on the first look.
 - Local book rows are matched through a tiered cross-provider identity chain:
   exact `foreignBookId`, then the `goodreadsWorkId`/`goodreadsBookId`
   sidecars, then bare `asin`/`audibleASIN` equality, with the title tier only

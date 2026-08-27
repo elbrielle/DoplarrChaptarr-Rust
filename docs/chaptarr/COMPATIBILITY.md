@@ -332,6 +332,19 @@ The author gate is ANDed into search eligibility at the SQL level
 for a monitored book — which is why the bot enables and read-back-verifies the
 requested format's `*MonitorFuture` before searching.
 
+`PUT /author/{id}/monitor/{mediaType}` is a landmine, not a shortcut: it
+never touches the author entity. It bulk-rewrites the per-book media-type
+monitor column for **every** book of the author via raw SQL
+(`AuthorController.cs:1154-1166` → `AuthorService.cs:1147-1153` →
+`BookRepository.cs:679-716`, unfiltered by media type), returns a bare 200,
+and leaves `*MonitorFuture`/`*MonitorExisting` unchanged — automatic search
+stays gated off (`AuthorExtensions.cs:16-39`) while unrelated books' monitor
+state is clobbered. The author gate remains the full-resource
+`PUT /author/{id}` setting the format's `*MonitorFuture` plus `monitored`,
+verified by re-read. And never send `booksToMonitor` in any body: a
+`SpecificBook` monitor type with an empty list throws server-side
+(`BookMonitoredService.cs:113-114`).
+
 ## Duplicate pockets are intentional data model
 
 A work exists per media type as separate Book rows (media-typed columns and
@@ -346,16 +359,35 @@ and monitor only that row; already-requested checks span every matching row.
 
 ## Catalog settling
 
-Monitoring or edition work done before a fresh import settles can be silently
-reverted: `AuthorScannedHandler.cs:41-52` bulk-rewrites monitor flags at scan
-completion while `author.AddOptions` is still set, then clears it. Refresh
-preserves existing rows' monitor flags (`Book.cs:322-324`) and re-derives
-edition selection while honoring pins. The bot therefore requires successful
-command polls, no author-relevant command in flight, and stable book plus
-target-edition fingerprints across consecutive samples before mutating, all
-within a hard deadline; errors and the deadline fail closed. (That a 400+ book
-author imports for minutes is an operational observation.) The settle-gate
-internals are sprint-2 scope.
+The post-add monitor-rewrite hazard is one shot. `AuthorScannedHandler` gates
+on `AddOptions != null` (`AuthorScannedHandler.cs:41`), bulk-rewrites the
+author's book monitor flags per `AddOptions` (`:43`), re-persists the author
+(`BookMonitoredService.cs:118-125`), and only then clears `AddOptions`
+(`:50-51`). It handles both `AuthorScannedEvent` and `AuthorScanSkippedEvent`
+(`AuthorScannedHandler.cs:11-12,58-66`), so the latch clears on the scan path
+(`RefreshAuthor` → `RescanFolders` → `DiskScanService.cs:892-896`) and on the
+no-folder-evidence skip path (`RefreshAuthorService.cs:2170-2178`, where no
+`RescanFolders` is ever pushed). Nothing else clears `AddOptions` — the
+handler is `RemoveAddOptions`'s only production call site, and a full-resource
+`PUT /author/{id}` cannot overwrite it (`AuthorResource.cs:571-573`,
+`AuthorService.cs:634-636`). `GET /author/{id}` serializes `addOptions`
+(`AuthorResource.cs:81,159`) with nulls omitted, so a missing key means the
+handler already ran.
+
+The bot's settle gate is therefore a composite latch, not a sampling loop:
+`addOptions` absent on `GET /author/{id}` AND no queued/started
+author-relevant command, inside a hard deadline; poll errors and the deadline
+fail closed, and a long-settled author passes on the first look. No
+book/edition fingerprint sampling is needed once the latch is spent, because
+refresh preserves existing rows' monitor flags (`Book.cs:337-338`, plus
+`AnyEditionOk` `:339` and `AddOptions` `:343`), new rows are monitored only
+under `MonitorExisting == 1` (`RefreshAuthorService.cs:1804-1805`), and the
+manual edition pin is protected (`EditionPinPolicy.cs:20`; pinned books
+un-prunable, `RefreshBookService.cs:428-447`). The author-gate write stays
+after settle because the handler's rewrite re-persists the author. Dead-end
+signals, for the record: `book.addOptions` is never null (constructor
+default, `Book.cs:30`) and `AuthorScanCompletedEvent` has zero consumers.
+(That a 400+ book author imports for minutes is an operational observation.)
 
 ## POST /book hard edges
 

@@ -124,6 +124,12 @@ behaviors; the next canary must exercise each one explicitly:
   `asin`/`audibleASIN`): the existing identity-drift probe must confirm a
   `gr:` lookup short-circuits to an `hc:`-normalized local row with no
   re-add, and that the sidecar fields are actually present on imported rows.
+- The settle gate is now the composite latch (`addOptions` absent on
+  `GET /author/{id}` AND commands quiet) with no fingerprint sampling: a
+  new-author add must be observed holding until `addOptions` disappears and
+  proceeding promptly afterwards — on both the scan path and the
+  no-folder-evidence skip path (no `RescanFolders` ever appearing) — and the
+  write-before-settle failure must stay impossible at the deadline.
 
 Nothing in this sprint graduates the write path out of beta; that requires
 this checklist's mutation proof against a disposable 0.9.936 instance.
