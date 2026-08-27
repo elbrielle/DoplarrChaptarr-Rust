@@ -4,14 +4,14 @@
   "title": "The Clockwork Orchard",
   "mediaType": "ebook",
   "monitored": true,
+  "ebookMonitored": true,
   "hasFiles": true,
-  "grabbed": false,
   "foreignEditionId": "hc:edition-3001",
   "releaseDate": "2024-05-14T00:00:00Z",
   "images": [
     {
       "coverType": "cover",
-      "url": "https://covers.example.test/clockwork-orchard-ebook.jpg"
+      "url": "/MediaCoverProxy/local/clockwork-orchard-4101.jpg"
     }
   ],
   "statistics": {
@@ -21,13 +21,5 @@
   "ratings": {
     "popularity": 87.5,
     "votes": 240
-  },
-  "editions": [
-    {
-      "title": "The Clockwork Orchard",
-      "foreignEditionId": "hc:edition-3001",
-      "isEbook": true,
-      "isbn13": "9780000000002"
-    }
-  ]
+  }
 }

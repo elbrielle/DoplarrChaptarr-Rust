@@ -809,8 +809,7 @@ mod tests {
     const PROCESSING: &str = include_str!("../../../tests/fixtures/chaptarr/book_processing.json");
     const UNMONITORED: &str =
         include_str!("../../../tests/fixtures/chaptarr/book_unmonitored.json");
-    const PLACEHOLDER: &str =
-        include_str!("../../../tests/fixtures/chaptarr/book_placeholder.json");
+    const SPARSE: &str = include_str!("../../../tests/fixtures/chaptarr/book_sparse.json");
     const QUALITY: &str = include_str!("../../../tests/fixtures/chaptarr/quality_profiles.json");
     const METADATA: &str = include_str!("../../../tests/fixtures/chaptarr/metadata_profiles.json");
     const ROOTS: &str = include_str!("../../../tests/fixtures/chaptarr/root_folders.json");
@@ -1213,10 +1212,14 @@ mod tests {
     }
 
     #[test]
-    fn placeholder_fixture_is_not_complete() {
-        let placeholder: Value = serde_json::from_str(PLACEHOLDER).unwrap();
-        assert!(!book_complete(&placeholder));
-        assert!(needs_author_refresh(Some(&placeholder)));
+    fn sparse_fixture_still_trips_the_legacy_completeness_gate() {
+        // 0.9.936 mints no placeholders; a row with no releaseDate/images is
+        // ordinary sparse upstream metadata (Edition.cs, EditionService.cs).
+        // The completeness gate has not been retired yet, so this documents
+        // that a legitimate sparse row is currently still rejected by it.
+        let sparse: Value = serde_json::from_str(SPARSE).unwrap();
+        assert!(!book_complete(&sparse));
+        assert!(needs_author_refresh(Some(&sparse)));
         assert!(!needs_author_refresh(None));
     }
 
