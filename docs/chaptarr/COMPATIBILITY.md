@@ -1,189 +1,372 @@
-# Chaptarr compatibility contract
+# Chaptarr compatibility contract (v2)
 
 This document defines the deliberately small part of Chaptarr's API that
-DoplarrChaptarr depends on. Chaptarr is still pre-1.0 and does not publish a
-machine-readable API contract, so the Rust client is handwritten, tolerant of
-additive fields, and tested against sanitized response fixtures.
+DoplarrChaptarr depends on. Chaptarr is pre-1.0 and its committed OpenAPI
+document is unreliable (see the drift policy), so the Rust client is
+handwritten, tolerant of additive fields, and tested against fixtures shaped by
+the serializer rules below.
 
-The compatibility baseline is Chaptarr `0.9.720.0`. The published container
-tag is [`robertlordhood/chaptarr:0.9.720`][chaptarr-tags]. The fixture shapes
-were derived from read-only inspection of that release on 2026-07-12, the
-previous DoplarrChaptarr implementation, and its recorded live-test findings.
-They are examples, not a promise that Chaptarr will never add or omit fields.
+**Baseline: Chaptarr `v0.9.936` (`develop @ 423b1bb`).** Every behavioral claim
+in this document cites a file path in the Chaptarr source at that ref. Claims
+that earlier revisions of this document attributed to live probing have been
+re-derived from source; where the source contradicted the folklore, the source
+won. Operational timing observations (for example, how long a large catalog
+import takes) are labeled as observations.
 
 The base URL is `<CHAPTARR_URL>/api/v1`. Send the API key in `X-Api-Key`; never
 put it in a URL, log line, fixture, or Discord response.
+
+## Serializer contract (the traps)
+
+All REST responses pass through one serializer configuration
+(`src/NzbDrone.Common/Serializer/System.Text.Json/STJson.cs:27-33`, wired into
+MVC in `src/NzbDrone.Host/Startup.cs:99-101`):
+
+- **Null properties are omitted entirely** (`WhenWritingNull`). A response
+  never contains an explicit `null`; the key is simply absent. Fixtures must
+  never contain a `null` value.
+- **`id: 0` is omitted.** `RestResource.Id` is an `int` with
+  `[JsonIgnore(WhenWritingDefault)]` (`src/Chaptarr.Http/REST/RestResource.cs:7-8`).
+  A non-local lookup row therefore has **no `id` key at all** — and an id is
+  never a string and never null. A string id is malformed data and fails
+  closed.
+- **`grabbed` is effectively never present.** `BookResource.Grabbed` and
+  `EditionResource.Grabbed` carry `WhenWritingDefault`
+  (`BookResource.cs:87-88`, `EditionResource.cs:65`), and the REST mapping
+  hardcodes it `false` (`BookResource.cs:236`). Only the SignalR broadcast
+  handler sets it (`BookController.cs:1997`). A REST client can never observe
+  `grabbed: true`, so nothing may key on it.
+- **Book GET responses never carry an `editions` key.** The `ToResource`
+  mapper (`BookResource.cs:142-259`) never assigns `Editions`; repo-wide, the
+  property is set only by `BookLookupController.cs:235` and
+  `SearchController.cs:173`. On `/book` and `/book/{id}` the key is absent —
+  not `[]`.
+- **Enums serialize as camelCase strings** (`JsonStringEnumConverter`,
+  `STJson.cs:33`) — except where a resource declares the property as `int`
+  (see the profileType asymmetry below).
+- **Plain `bool`/`int` properties always serialize**, `false`/`0` included
+  (only `WhenWritingNull` is global). Nullable properties (`int?`, `bool?`,
+  `string`) are omitted when null. `readingFormatId` is `int?`
+  (`EditionResource.cs:48`) and is omitted when unset.
+- Request parsing is case-insensitive; responses are pretty-printed. Neither
+  matters to the client, but explains payload tolerance on the server side.
+
+Our models must deserialize every key-absent shape above without error; the
+`serializer_traps` test module in `doplarr/src/providers/chaptarr/models.rs`
+enforces this.
 
 ## Supported endpoints
 
 | Method | Endpoint | Purpose | Required response data |
 | --- | --- | --- | --- |
 | `GET` | `/system/status` | Startup compatibility check | `appName: "Chaptarr"`, non-empty `version` |
-| `GET` | `/book/lookup?term=...` | Read-only search before confirmation | title, author identity, foreign work identity, images/editions when present |
+| `GET` | `/book/lookup?term=...` | Read-only search before confirmation | title, author identity, foreign work identity; images/editions when present |
 | `GET` | `/author` | Resolve an already-local author | `id`, `foreignAuthorId`, `authorName` |
 | `GET` | `/author/{id}` | Read and verify the requested-format author gate | `id`, `ebookMonitorFuture`, `audiobookMonitorFuture` |
 | `GET` | `/book?authorId=...` | Poll and rank local format rows | fields listed under "Book rows" |
-| `GET` | `/book/{id}` | Verify status and monitor writes; its `editions` array is always empty and never edition truth | fields listed under "Book rows" |
-| `GET` | `/edition?bookId=...` | The only source of local edition truth | `id`, authoritative `format`, `monitored`; language, title, and identifiers when present |
-| `GET` | `/command` | Detect in-flight catalog commands while a new author's import settles | `name`, `status`; `body.authorId`/`body.authorIds` when present |
-| `GET` | `/qualityprofile` | Resolve per-format quality profiles | `id`, `name`, `profileType` |
-| `GET` | `/metadataprofile` | Resolve per-format metadata profiles | `id`, `name`, `profileType` |
-| `GET` | `/rootfolder` | Resolve accessible roots | `id`, `path`; `accessible` when present |
-| `POST` | `/book` | Add a new author/catalog or an exact work under an existing author | created book row with `authorId`, or enough identity to re-resolve it |
+| `GET` | `/book/{id}` | Verify status and monitor writes; carries no `editions` key | fields listed under "Book rows" |
+| `GET` | `/edition?bookId=...` | The only source of local edition truth | `id`, `readingFormatId`/`isEbook`, `monitored`; language, title, identifiers when present |
+| `GET` | `/command` | Detect in-flight catalog commands while an import settles | `name`, `status`; `body.authorId`/`body.authorIds` when present |
+| `GET` | `/qualityprofile` | Resolve per-format quality profiles | `id`, `name`, string `profileType` |
+| `GET` | `/metadataprofile` | Resolve per-format metadata profiles | `id`, `name`, numeric `profileType` |
+| `GET` | `/rootfolder` | Resolve accessible roots | `id`, `path`; `accessible`, `folderType`, nested settings when present |
+| `POST` | `/book` | Add a new author/catalog or an exact work under an existing author | see "POST /book hard edges" |
 | `PUT` | `/author/{id}` | Enable one format's author-level monitor gate | response is not trusted; verify with `GET` |
-| `PUT` | `/book/{id}` | Select exactly one edition via the complete book body; monitor flags in this body are silently ignored | response is not trusted; verify with `GET /edition?bookId=...` |
+| `PUT` | `/book/{id}` | Select exactly one edition via the complete book body | response is not trusted; verify with `GET /edition?bookId=...` |
 | `PUT` | `/book/monitor` | Monitor one selected book row (the only book-level monitor write that persists) | HTTP success only; verify with `GET /book/{id}` |
-| `POST` | `/command` | Queue one `BookSearch`, or a narrowly gated `RefreshAuthor` | command acknowledgement; the body is otherwise opaque |
+| `POST` | `/command` | Queue one `BookSearch` | command acknowledgement; the body is otherwise opaque |
+
+The provider no longer issues `RefreshAuthor` under any circumstance (see
+"Sparse metadata is not a placeholder").
 
 Unknown response fields must be ignored. Fields used only for ranking or
 covers must be optional. A missing identity is not optional. A format
 discriminator and local row ID become mandatory when resolving the exact local
-row before a write; they are not required merely to display a work-level lookup
-result.
+row before a write; they are not required merely to display a lookup result.
 
-## Shape and field rules
+## Lookup
 
-### Lookup results
+### Free-text lookups are Goodreads-autocomplete projections
 
-`GET /book/lookup` returns an array. Chaptarr `0.9.720.0` can include:
+Free-text terms go to Goodreads autocomplete only; provider-prefixed terms
+(`hc:|gr:|ol:|gb:|az:|isbn:`) resolve through a different local/provider path
+(`src/Chaptarr.Api.V1/Books/BookLookupController.cs:45-94`, prefix resolution
+at `:96-215`; the proxy routes canonical prefixes to `SearchByV5WorkId`,
+`BookInfoProxy.cs:2475-2499`). The bot only ever sends free text, so its
+results have the autocomplete mapper's shape
+(`BookInfoProxy.cs:3757-3828`):
 
-- `id`, sometimes numeric and sometimes string-like in older or transitional
-  responses. Only a positive integer means a local row; `0`, `"0"`, null, and
-  malformed strings mean "not local."
-- `title`, `titleSlug`, `overview`, `releaseDate`, and `foreignBookId`.
-- `author.id`, `author.authorName`, and `author.foreignAuthorId`.
-- `images`, `remoteCover`, and edition-level `images`.
-- `localEbookBooks` and `localAudiobookBooks`. Positive IDs in the array for
-  the requested format are a better local shortcut than the top-level `id`.
-- `editions`, which may carry projected `foreignEditionId`, `isEbook`,
-  `isbn13`, `asin`, language, and additional cover images. These lookup fields
-  are discovery hints, not authoritative local-edition format state.
+- `gr:`-prefixed foreign ids for the book, author, and edition.
+- **Every result carries `mediaType: "audiobook"`** — the mapper never assigns
+  `MediaType`, and the C# default is `Audiobook = 0`
+  (`src/NzbDrone.Core/Books/Model/Book.cs:100`, enum at `:16`).
+- One edition per result, with **only** `foreignEditionId`, `title`,
+  `titleSlug`, `overview`, `monitored: true`, `manualAdd`, `pageCount`,
+  `ratings`, and `images` assigned (`BookInfoProxy.cs:3794-3822`). There is
+  **no `isbn13`, `asin`, `format`, `language`, `releaseDate`, or
+  `readingFormatId`**, and `isEbook` is the always-written default `false`.
+  Free-text edition data can therefore never prove a format and is never
+  carried into a write.
+- No top-level `id` key (see serializer contract); `localEbookBooks` and
+  `localAudiobookBooks` (`BookLookupController.cs:223-230`) are the bridge to
+  local rows. A positive id in the requested format's array is the only local
+  shortcut; never use the other format's array.
 
-Lookup order is not stable and is not a ranking guarantee. Never use a local
-audiobook ID to satisfy an ebook request, or the reverse.
+### The `mediaType` landmine
 
-The lookup row's `mediaType` and edition `isEbook` values describe the metadata
-projection Chaptarr returned; they do not prove that the work cannot be
-requested in the other format. Live `0.9.720.0` testing returned only
-`audiobook` projections for generic queries initiated as ebook searches.
-Retain those work results, prefer a requested-format projection when the same
-foreign work appears more than once, and enforce format only when selecting a
-local row before mutation.
+`BookLookupController.cs:86-89` filters remote results by a requested
+`mediaType`. Combined with the audiobook struct default above,
+**`term=<free text>&mediaType=ebook` always returns `[]`.** The bot never
+sends `mediaType` on lookup, and it treats a row's `mediaType` as a
+duplicate-projection preference, never a search-stage exclusion: a row
+labelled `audiobook` can still be the correct work for an ebook request.
 
-### Profile and root discriminators
+### Covers are proxied — including `remoteCover`
 
-Chaptarr uses two different representations for `profileType`:
+Every `images[].url` in a lookup response has been rewritten in place to a
+relative proxied path (`MediaCoverService.cs:405-414` registers
+`/MediaCoverProxy/<hash>/<file>`; stored entities get `/MediaCover/Books/...`
+at `:472,480-481`). `BookResource.Images` shares the `MediaCover` object
+references with the monitored edition's images (`BookResource.cs:229-231` is a
+filter, not a copy), so when `remoteCover` is assigned from that same object
+(`BookLookupController.cs:246-250`) it is the **same relative URL**, not the
+upstream absolute one. The free-text mapper always creates its edition
+monitored (`BookInfoProxy.cs:3801`), so this is the normal case. The absolute
+upstream URL survives only on `images[].remoteUrl`, which is where the client
+reads it. Stored-book rows always serialize `remoteCover: ""`
+(`BookResource.cs:235`).
 
-- Quality profiles: `"ebook"` or `"audiobook"`.
-- Metadata profiles: `2` for ebook, `1` for audiobook, and `0` for none.
+### Identity drift is structural
 
-The new-author request must carry all four per-format profile IDs. The legacy
-singular `qualityProfileId` and `metadataProfileId` fields were silently
-ignored in live testing. Resolve configured profile names exactly at startup;
-if a configured name is missing or ambiguous, fail configuration validation.
+Canonical provider-id prefixes are `hc, gr, ol, gb, az`
+(`src/NzbDrone.Core/MetadataSource/ProviderIdHelper.cs:8-20`), preferred in
+that order when a primary id is chosen (`BookInfoProxy.cs:5333`,
+`ProviderAmbiguityResource.cs:236-242`). Free-text results carry `gr:` ids;
+imported entities normalize toward `hc:` over time, and primary ids are
+documented as mutable (`docs/API_IDENTITY_AND_LIFECYCLE.md:13-46`). The bot
+resolves authors first by exact `foreignAuthorId`, then by a normalized
+author-name fallback only when exactly one local author matches; local book
+rows must match the selected `foreignBookId` exactly, with a title-tier
+fallback only when the selection has no work id. A row whose id has already
+normalized away from the lookup's `gr:` id will not foreign-id-match; this
+drift is a known hazard flagged for the sprint-3 live canary.
 
-Roots are selected by exact configured path or name. When no root is configured,
-the client uses Chaptarr's format/default flags, then conservative `ebook` or
-`audiobook` path/name inference only if those flags are absent. Ambiguity stops
-startup. A root explicitly marked `accessible: false` is never selectable. Do
-not expose a local root path in a Discord message or public issue report.
+## Profiles
 
-Chaptarr `0.9.720.0` may return the root-folder keys `ebook` and `audiobook` as
-nested settings objects on every root, rather than boolean format flags. Those
-objects are accepted for compatibility but never treated as discriminators;
-only an explicit boolean `true` may select a format. Exact configured paths are
-therefore preferred, with conservative path/name inference as the fallback.
+`profileType` is serialized asymmetrically, straight from the resource
+declarations:
 
-### Book rows
+- **Quality profiles: camelCase string.** `QualityProfileResource.ProfileType`
+  is the enum (`src/Chaptarr.Api.V1/Profiles/Quality/QualityProfileResource.cs:15`),
+  and `ProfileType { Audiobook = 1, Ebook = 2 }`
+  (`src/NzbDrone.Core/Profiles/Qualities/QualityProfile.cs:9-13`) has no
+  none/general member — so the wire value is `"audiobook"` or `"ebook"`.
+- **Metadata profiles: number.** `MetadataProfileResource.ProfileType` is
+  declared `int` with an explicit cast
+  (`src/Chaptarr.Api.V1/Profiles/Metadata/MetadataProfileResource.cs:14,86`),
+  and its enum is a different one with `General = 0, Audiobook = 1, Ebook = 2`
+  (`src/NzbDrone.Core/Profiles/Metadata/MetadataProfile.cs:6-11`).
 
-Chaptarr `0.9.720.0` exposes row-oriented state:
+Resolve configured profile names exactly at startup; a missing or ambiguous
+name fails configuration validation. A missing quality profile for the
+requested media type independently empties that format's searches server-side
+(`ReleaseSearchService.cs:106-113`), so profile resolution is a correctness
+gate, not cosmetics.
 
-- `id` and `authorId` identify the local row and parent author.
-- `mediaType` is `"ebook"` or `"audiobook"`.
-- `monitored`, `hasFiles`, `grabbed`, and `statistics` describe that row.
-- Older shapes may additionally expose `ebookMonitored`,
-  `audiobookMonitored`, `ebookStatistics`, and `audiobookStatistics`.
-- `foreignEditionId`, `releaseDate`, and `images` distinguish resolved rows
-  from placeholders.
-- `ratings.popularity`, `ratings.votes`, and release date are optional ranking
-  tie-breakers only.
+## Root folders
 
-Always bind a row-oriented flag to its `mediaType`. An ebook row's
-`monitored`, `hasFiles`, or `statistics` must never satisfy an audiobook
-request.
+On 0.9.936 a root folder's nested `ebook`/`audiobook` keys are settings
+objects that are present **only when the root is configured for that format**
+(`src/Chaptarr.Api.V1/RootFolders/RootFolderResource.cs:46-47`; the mapper
+returns null — omitted — for an unconfigured format at `:399-400`).
+`folderType` is a plain int (0=Mixed, 1=Audiobook, 2=Ebook; `:39`), and flat
+per-format mirror fields sit alongside the nested objects (`:50-69`):
+`{ebook,audiobook}QualityProfileId`, `{ebook,audiobook}MetadataProfileId`,
+`{ebook,audiobook}MonitorExisting`/`MonitorFuture` (nullable, omitted when
+unconfigured), plus sidecar bools and tag lists that always serialize.
+
+Resolution behavior is deliberately unchanged this sprint: exact configured
+path or name first; otherwise explicit boolean flags/effective defaults, then
+conservative name/path inference. Object presence is a valid format
+discriminator per the source above and is scheduled to be consumed by the
+sprint-2 root-folder rework. A root with `accessible: false` is never
+selectable. Do not expose a local root path in a Discord message or public
+issue report.
+
+## Book rows
+
+- `id` and `authorId` identify the local row and parent author; `mediaType` is
+  `"ebook"` or `"audiobook"` per row — a work requested in both formats is two
+  separate rows (media-typed columns throughout `Book.cs`).
+- **Top-level `Book.Monitored` is a dead legacy column.** The model says so
+  itself (`Book.cs:104-107`: kept for database compatibility, always false for
+  new books, "Use AudiobookMonitored/EbookMonitored instead"). This dead
+  column is the origin of our old misreading of monitor state. The live flags
+  are `ebookMonitored`/`audiobookMonitored`, and a row-level flag must always
+  be bound to its row's `mediaType`.
+- On update, `PUT` bodies project **top-level `monitored`** onto the stored
+  row's media-typed column (`BookResource.cs:983-991`); the per-format body
+  flags are never read on update. See "Monitoring writes."
+- The cross-format mutual-exclusion invariant clears the opposite format's
+  flag when a format is set — unconditionally in `SetMonitored`
+  (`Book.cs:415-427`), conditionally on the row's `MediaType` in the two
+  `SetMonitoredForMediaType` overloads (`Book.cs:381-406,438-456`).
+- `grabbed` never appears on REST (serializer contract above), so in-flight
+  detection is: files present, an active exact `BookSearch` command, or the
+  bot's own in-process acknowledgement cache.
+- `statistics` (and per-format statistics where present), `ratings`, and
+  `releaseDate` are ranking/status inputs only.
 
 For the requested format, status is evaluated in this order:
 
-1. **Available:** matching row has `hasFiles: true`, or its matching statistics
+1. **Available:** matching row has `hasFiles: true` or matching statistics
    report a positive `bookFileCount`.
-2. **Active or recently acknowledged request:** the matching row is grabbed,
-   or a monitor flag is present and an exact `BookSearch` is queued/started, or
-   the same bot process retains a recent valid acknowledgement for that row.
-3. **Partial request:** one or more monitor/edition writes exist without the
-   full verified state or a confirmed search. A retry repairs this state.
-4. **Unmonitored:** none of those conditions is true.
+2. **Active or recently acknowledged request:** an exact `BookSearch` is
+   queued/started for a matching row id, or the same bot process retains a
+   recent valid acknowledgement for that row.
+3. **Partial request:** monitor/edition writes exist without the full verified
+   state or a confirmed search. A retry repairs this state.
+4. **Unmonitored:** none of the above.
 
-Where per-format legacy fields exist, use only the pair belonging to the
-requested format. Prefer the row-oriented `0.9.720.0` fields when `mediaType`
-is present.
+## Sparse metadata is not a placeholder
 
-### Resolved rows and placeholders
+0.9.936 has **no placeholder mechanism**: no `default-*` foreign ids are
+minted anywhere (the only `default-` string in the repo is a CSP header), and
+`Edition.IsFallbackEdition` (`Edition.cs:89`) is never set true in production
+— the schema defaults it false and code only propagates it. Blank-title
+editions are rejected at insert (`src/NzbDrone.Core/Books/Services/EditionService.cs:235-243`).
 
-A row is safe to monitor only when all three are true:
+A row with no `releaseDate`, `images`, or `foreignEditionId` key is therefore
+ordinary sparse upstream metadata, requestable like any other identity-matched
+row. The former completeness gate and its guarded `RefreshAuthor` repair path
+are deleted: refresh has real deletion side effects — metadata-profile
+filtering during refresh prunes unprotected local rows
+(`RefreshAuthorService.cs:568-623` excludes filtered books;
+`RefreshEntityServiceBase.cs:136-143` deletes locals with no remote) — so a
+repair path that existed only to resolve nonexistent placeholders was pure
+risk. Books protected by the edition pin are un-prunable
+(`RefreshBookService.cs:428-447`).
 
-- `releaseDate` is present;
-- `images` is non-empty;
-- `foreignEditionId` is present and does not start with `default-`.
+## Editions
 
-A row missing any of those signals is a placeholder. Chaptarr has historically
-returned success while dropping monitor changes against placeholders. Poll for
-a complete, title-matching row with a hard attempt and time limit. If it never
-resolves, report a metadata-pending error; do not search a sibling work.
+`GET /edition?bookId=...` (`EditionController.cs`, repeatable `bookId` param)
+is the only edition read for stored books.
 
-`RefreshAuthor` may be attempted once, after confirmation, only when the exact
-target remains a placeholder. It is not a general retry: refresh can reapply
-metadata-profile filters and remove editions.
+- **`format` is verbatim provider text** ("Kindle Edition", "Hardcover",
+  "Audible Audio"; `Edition.cs:41`) — display and logging only, never a
+  selection input.
+- **`readingFormatId` is the structured discriminator**: 1=physical, 2=audio,
+  3=ebook (`Edition.cs:58`, comment inline; `EditionResource.cs:48`, `int?` —
+  omitted when unset). Selection maps 2→audiobook, 3→ebook; 1 and any
+  unrecognized value fail closed; 0 is the C# unset default and is treated as
+  absent.
+- When `readingFormatId` is absent, `isEbook: true` still proves an ebook.
+  `isEbook: false` proves nothing — the edition can be physical — so it fails
+  closed for writes and read-back. Read-only ranking and cover discovery may
+  stay tolerant of undiscriminated projections.
+- The edition pin: an edition with `ManualAdd`, or `Monitored` while the book
+  has `AnyEditionOk = false`, is protected from automation re-picks
+  (`src/NzbDrone.Core/Books/EditionPinPolicy.cs:20`), and such books are
+  un-prunable during refresh (`RefreshBookService.cs:441-444`).
 
-### Editions, duplicate pockets, and catalog settling
+## Monitoring writes
 
-The following behaviors were confirmed by hand against live Chaptarr
-`0.9.720.0` during the 2026-07-15 new-author incident repair. Each one can make
-a naive request pipeline fail silently or appear to work:
+### Two PUT routes, different pin semantics
 
-The incident was not a missing `BookSearch` call: the old path queued a search
-for a Farseer collection row while Robin Hobb's catalog refresh was still in
-flight, and that search returned zero results. The row had no selected usable
-ebook edition, and later refresh work removed its partial monitor state.
+`BookController.cs` registers two update routes: `PUT /book` (body id,
+`pinExplicitEditionChange: false`; `:1791,1794`) and `PUT /book/{id}`
+(`:1797,1800`, `pinExplicitEditionChange: true`). Only the `{id}` route forces
+`AnyEditionOk = false` on an explicit single-monitored-edition change
+(`:1827-1830`), which is what makes the pin survive refresh. The bot always
+uses `PUT /book/{id}` with the complete book body, `anyEditionOk: false`, and
+the full editions array carrying exactly one edition `monitored: true` +
+`manualAdd: true` — the officially supported, refresh-surviving pin,
+mirroring the UI's manual pick.
 
-- `GET /book/{id}` (and the `/book?authorId=...` rows) always report
-  `"editions": []`. Edition truth comes only from `GET /edition?bookId={id}`.
-  Verifying "does this book have editions?" through the book resource wrongly
-  concludes there are none.
-- `PUT /book/{id}` silently ignores `monitored` and the per-format monitor
-  flags: no error is returned and the flags stay false. Book-level monitoring
-  persists only through `PUT /book/monitor` with
-  `{"bookIds": [...], "monitored": true}`.
-- Edition selection does persist through the full-book `PUT /book/{id}`: send
-  the complete book body plus `anyEditionOk: false` and the full `editions`
-  array with exactly one edition `monitored: true` and `manualAdd: true`,
-  mirroring the Chaptarr UI's manual pick.
-- Local edition `format` is authoritative. Select Ebook only for an ebook
-  request and Audiobook only for an audiobook request. Physical is a separate
-  value and must never be inferred to mean Audiobook merely because a legacy
-  `isEbook` flag is false or missing.
-- New-author imports can duplicate one work into multiple local rows
-  ("pockets", logged server-side as `[SERVER-BUG-CANDIDATE] ... provider id(s)
-  appearing in multiple pockets`). The pockets are not equivalent: one row can
-  carry many usable requested-format editions while its twin carries none.
-  Requests must choose the row with usable requested-format editions and
-  monitor only that row, and already-requested checks must span every matching
-  row rather than one preferred row.
-- Catalog population after adding an author is not instantaneous. A 400+ book
-  author imports and refreshes for minutes, and monitor or edition writes made
-  before the catalog settles can be silently reverted by the tail of that
-  import. Require successful command polls, no author-relevant command in
-  flight, and stable book plus target-edition fingerprints before mutating.
-  Command/API errors and the deadline fail closed.
+### What `PUT /book/{id}` actually persists
+
+`ToModel` on update (`BookResource.cs:983-991`) reads **top-level
+`monitored`** and projects it onto the stored row's media-typed column; the
+per-format body flags (`ebookMonitored`/`audiobookMonitored`) are ignored on
+update, and top-level `Book.Monitored` itself is the dead column described
+above. Practically: edition selection persists through `PUT /book/{id}`;
+book-level monitoring is written through `PUT /book/monitor`
+(`{bookIds, monitored}`, `BookController.cs:1948-1955`,
+`BooksMonitoredResource.cs:7-8`; returns 202 with the mapped book list), which
+enforces the cross-format invariant. Both writes are verified by re-reading
+`/book/{id}` and `/edition?bookId=...` before any search is queued.
+
+### The author monitor model
+
+`AuthorResource.cs:57-61` exposes five nullable gates, omitted when
+unconfigured:
+
+- `{ebook,audiobook}MonitorFuture` (`bool?`) — the per-format future-monitor
+  gates the bot sets and verifies.
+- `{ebook,audiobook}MonitorExisting` (`int?`, tri-state: 0=None, 1=All,
+  2=Selected, null=unconfigured).
+- `syncMonitoredAcrossFormats` (`bool?`).
+
+The author gate is ANDed into search eligibility at the SQL level
+(`AuthorExtensions.cs:16-93`), so an unset gate silently empties searches even
+for a monitored book — which is why the bot enables and read-back-verifies the
+requested format's `*MonitorFuture` before searching.
+
+## Duplicate pockets are intentional data model
+
+A work exists per media type as separate Book rows (media-typed columns and
+per-row `mediaType` throughout `Book.cs`); only bit-identical pockets
+coalesce. Imports can additionally leave duplicate local rows for one
+`foreignBookId` within a format (logged server-side as
+`[SERVER-BUG-CANDIDATE] ... provider id(s) appearing in multiple pockets` —
+an operational observation from the 2026-07-15 incident). The pockets are not
+equivalent: one row can carry usable requested-format editions while its twin
+carries none. Requests choose the row with usable requested-format editions
+and monitor only that row; already-requested checks span every matching row.
+
+## Catalog settling
+
+Monitoring or edition work done before a fresh import settles can be silently
+reverted: `AuthorScannedHandler.cs:41-52` bulk-rewrites monitor flags at scan
+completion while `author.AddOptions` is still set, then clears it. Refresh
+preserves existing rows' monitor flags (`Book.cs:322-324`) and re-derives
+edition selection while honoring pins. The bot therefore requires successful
+command polls, no author-relevant command in flight, and stable book plus
+target-edition fingerprints across consecutive samples before mutating, all
+within a hard deadline; errors and the deadline fail closed. (That a 400+ book
+author imports for minutes is an operational observation.) The settle-gate
+internals are sprint-2 scope.
+
+## POST /book hard edges
+
+`BookController.cs:1175-1384`:
+
+- `mediaType` comes from query or body (`:1198`); when neither is supplied, a
+  Seerr-compat path adds both formats (`:1206-1312`). The bot always sends an
+  explicit `mediaType`.
+- **400 unless an upstream provider work id survives mapping** —
+  `IsMissingUpstreamProviderBookId` (`:1386-1397`; driving 400s at
+  `:1253,1285,1348`).
+- Bare (unprefixed) foreign ids are rejected on the native API
+  (`:1399-1430`, a `ValidationException` when the id has no `:`; the facade
+  path is exempt).
+- Legacy singular `qualityProfileId`/`metadataProfileId` are translated by
+  profile type when per-format fields are absent (`:1613-1663`); our four
+  per-format ids remain the better payload. Per-format profiles live on the
+  nested `author`, not the book resource.
+- Responses: `201 Created` with a full `BookResource` (via
+  `RestController.cs:149-153`); **`202 Accepted` with
+  `PendingBookRequestResource {pendingId, message}`**
+  (`PendingBookRequestResource.cs:5-6`) when upstream metadata is unavailable;
+  and a **409** with `ProviderAmbiguityResource`
+  (`ProviderAmbiguityResource.cs:41` pins the status code; properties `error`,
+  `message`, `entityType`, `field`, `providerId`, `mediaType`, `candidates`)
+  on ambiguous provider identity. The bot currently treats any 2xx as an
+  acknowledgement and re-resolves identity itself; branching on the 202/409
+  shapes is tracked as stretch work.
+
+A post response is only an acknowledgement and never implies that a usable or
+correctly identified row already exists.
 
 ## Search and selection invariants
 
@@ -194,253 +377,162 @@ Search should be useful without becoming inventive:
 2. Display the author beside the title so common titles are distinguishable.
 3. Drop obvious non-work results such as study guides, SparkNotes/CliffsNotes,
    summaries and analysis, unofficial companions, lesson plans, and
-   conversation starters. Use conservative multi-word markers; do not reject
-   a legitimate title merely because it contains `guide` or `summary`.
-4. Prefer exact normalized title matches, then narrowly allow subtitle variants
-   separated by `:`, `-`, `—`, or parentheses. A plain shared prefix is not a
-   match. Never cross authors after the user has selected one.
-5. This provider requests one work per Discord interaction. Reject results with
-   clear multi-book title signals - such as a title ending in `bundle` or
+   conversation starters. Use conservative multi-word markers; do not reject a
+   legitimate title merely because it contains `guide` or `summary`. The
+   lookup path has zero server-side filtering, so this stays client-side.
+4. Prefer exact normalized title matches, then narrowly allow subtitle
+   variants separated by `:`, `-`, `—`, or parentheses. A plain shared prefix
+   is not a match. Never cross authors after the user has selected one.
+5. This provider requests one work per Discord interaction. Reject results
+   with clear multi-book title signals — a title ending in `bundle` or
    `trilogy`, an `omnibus`, a box set, a `complete ... series`, or an explicit
-   numbered book collection/set - with an instruction to request an individual
-   title. A bare word such as `collection` or `series` is not sufficient because
-   it can be part of a legitimate single-work title. Do not silently expand one
-   selection into multiple works or substitute a bundle for its members.
-6. Within that title tier, prefer an explicit requested `mediaType`, a resolved
-   row, and a title whose length is closest to the selected lookup title.
-   Popularity, votes, and release date are final tie-breakers.
+   numbered book collection/set — with an instruction to request an individual
+   title. A bare word such as `collection` or `series` is not sufficient. Do
+   not expand one selection into multiple works.
+6. Within a title tier, prefer a requested-format `mediaType` projection, a
+   resolved row, then popularity, votes, and release date as tie-breakers.
 7. If no row matches the selected title and format, stop. Falling back to a
    popular sibling title requests the wrong book.
 
-Provider IDs are hints, not universal identity. Lookup may return a Goodreads
-author ID while the local author was normalized to Hardcover. Resolve authors
-first by exact `foreignAuthorId`; if that fails, allow a normalized author-name
-fallback only when exactly one local author matches.
-
 ## Cover selection
 
-Cover rendering is strictly read-only. The old Clojure fork created an author
-while building the confirmation embed because the post-add row often had a
-better cover. That left catalog state behind when a user abandoned the dialog.
-The Rust implementation must never `POST`, `PUT`, or queue a command merely to
-obtain a cover.
+Cover rendering is strictly read-only; the bot never writes merely to obtain a
+cover. Per the proxied-cover truth above, the order is:
 
-Use the first safe option available:
-
-1. A fully qualified HTTPS `cover` image on the lookup result.
-2. A fully qualified HTTPS edition image, then a fully qualified HTTPS
-   `remoteCover`.
-3. An Open Library ISBN cover URL when the selected edition carries a valid
-   ISBN-13: `https://covers.openlibrary.org/b/isbn/<isbn>-L.jpg?default=false`.
-4. A cover from one best-effort Open Library Search API call per Chaptarr
-   search. Query by the selected title and author, request only the fields the
-   matcher needs, and accept `cover_i` only from a normalized title-and-author
-   match. Construct
-   `https://covers.openlibrary.org/b/id/<cover_i>-L.jpg?default=false`.
+1. A fully qualified HTTPS URL among the lookup images — in practice
+   `images[].remoteUrl`, since `images[].url` and `remoteCover` are relative
+   proxied paths on 0.9.936.
+2. A compatible edition image's HTTPS URL (same `remoteUrl` rule).
+3. An Open Library ISBN cover when a compatible edition carries a valid
+   ISBN-13 — provider-id path lookups only, since free-text editions carry no
+   ISBN (`BookInfoProxy.cs:3794-3810`).
+4. A cover from one best-effort, rate-limited Open Library Search call per
+   Chaptarr search, accepted only on a normalized title-and-author match
+   ([Search API][openlibrary-search], [Covers API][openlibrary-covers];
+   `default=false` returns 404 instead of a placeholder image).
 5. No cover. A cover failure never blocks a request.
 
-Relative Chaptarr cover URLs are not exposed because they often contain an
-internal hostname and this release has no separately configured public base
-URL. Open Library enrichment defaults to enabled but may be disabled per
-backend with `openlibrary_covers = false`; when enabled, the search text leaves
-the local network. The client identifies itself, caches results, and serializes
-requests to remain at or below one request per second.
-
-Open Library documents both the Search API's `cover_i` field and the Covers
-API's Cover ID/ISBN URL formats. `default=false` returns 404 instead of a blank
-placeholder. A local ISBN avoids an additional metadata request; when search
-enrichment is needed, its Cover ID URL is used. Construct a display URL; do not
-crawl or probe the Covers API during search. The Search API call needs an
-explicit short timeout and must
-degrade to the next option on timeout, non-2xx status, malformed JSON, no exact
-match, or no `cover_i`. See the [Open Library Search API][openlibrary-search]
-and [Open Library Covers API][openlibrary-covers]. ASIN-derived Amazon image
-URLs from the legacy fork are intentionally not part of this compatibility
-contract because there is no stable public API guarantee for them.
+Relative Chaptarr cover URLs are never exposed to Discord: they resolve
+against the (often private) Chaptarr host. Open Library enrichment defaults to
+enabled and may be disabled per backend with `openlibrary_covers = false`;
+when enabled, the search text leaves the local network.
 
 ## Safe request sequence
 
-The sequence below is an invariant. Keeping confirmation read-only and
-verifying every silent-write-prone step is more important than minimizing GETs.
+The sequence is an invariant. Keeping confirmation read-only and verifying
+every silent-write-prone step is more important than minimizing GETs.
 
 1. At startup, fetch status, profiles, and roots. Validate version and all
    configured names/paths before accepting a command.
-2. Search with `GET /book/lookup`. Filter and rank the result. One bounded,
-   best-effort Open Library metadata lookup may enrich covers for that search;
-   fetch no cover bytes and perform no write.
-3. Let the user select a result, format-specific options, and explicit Request
-   confirmation. Disable the Request button immediately after the click.
-4. Re-resolve the selected lookup identity. Short-circuit an available work or
-   a fully consistent active request. Do not treat a bare monitor flag as proof
-   that a search was queued; carry partial state forward for repair.
-5. If the author is new, `POST /book` with both roots, all four profile IDs,
-   an explicit requested `mediaType`, every book-level monitor flag false, only
-   the requested format's author-level `*MonitorFuture` gate true, and
-   search-on-add false. If the author exists but
-   the exact work does not, post the selected work with that local `authorId`.
-   A post response is only an acknowledgement and never implies that a usable
-   or correctly identified row already exists.
-6. After a new-author add (and after any `RefreshAuthor` the bot itself
-   queues), wait for the catalog to settle before any further step. Require
-   successful `GET /command` samples with no queued/started command that could
-   touch the author, plus unchanged book and target-edition fingerprints across
-   consecutive samples, all within a hard deadline. A command/API error or
-   timeout fails closed before monitoring or search.
-7. Poll `GET /book?authorId=...` with a bounded deadline. Reject a result with a
-   clear multi-book title signal and tell the requester to search for an
-   individual title. Otherwise select only the exact
-   title/author/requested-format row; when both sides expose `foreignBookId`, it
-   must match. Require a resolved row and repeat the identity check immediately
-   before monitoring and after the monitor read-back.
-8. Re-resolve edition-aware: fetch `GET /edition?bookId=...` for every matching
-   row, disambiguate duplicate pockets by usable requested-format editions, and
-   use authoritative local `format` to choose one Ebook or Audiobook edition
-   (with preferred language). Physical is not an audiobook fallback. A matching
-   row without a usable requested-format edition stops with an actionable error.
-9. Read the author. If the requested format's `*MonitorFuture` gate is false,
-   set only that gate (plus the required top-level `monitored` field), then
-   re-read the author to verify it.
-10. Select the edition with the full-book `PUT /book/{id}`: complete book body,
-    `anyEditionOk: false`, and the full editions array carrying exactly one
-    edition with `monitored: true` and `manualAdd: true`.
-11. `PUT /book/monitor` with one ID: `{"bookIds":[id],"monitored":true}`.
-12. Re-read `/book/{id}` and `/edition?bookId=...` and verify all of: the row
-    still matches the selected work, top-level `monitored` is true, the explicit
-    requested-format monitor flag is true, and exactly one requested-format
-    edition - the chosen one - is monitored. These are AND conditions. If any
-    did not persist, stop and do not queue a search.
-13. `POST /command` once with `{"name":"BookSearch","bookIds":[id]}` and
-    require a valid command acknowledgement. Only then may the requester be
-    told the request was accepted; acceptance does not promise an indexer match.
-14. Treat retries as convergent with bounded deduplication. Re-read all matching
-    pockets; stop for an available file, grab, exact queued/started `BookSearch`,
-    or a recent valid acknowledgement retained by the same bot process. Repair a
-    partial edition or monitor state that lacks that evidence through steps
-    8-13. Never create duplicate authors or queue a second concurrent/immediate
-    search. A restart clears the in-process acknowledgement, and a completed
-    zero-result search has no grab or file; an explicit retry in either case may
-    intentionally queue a fresh search rather than block the request forever.
+2. Search with `GET /book/lookup` (never sending `mediaType`). Filter and rank.
+   One bounded, best-effort Open Library call may enrich covers; no writes.
+3. Let the user select a result and confirm. Disable the Request button
+   immediately after the click.
+4. Re-resolve the selected identity under the per-work mutation lock.
+   Short-circuit an available work or a fully consistent active request. A
+   bare monitor flag is not proof a search was queued; partial state is
+   carried forward for repair.
+5. If the author is new, `POST /book` with both roots, all four per-format
+   profile ids, an explicit `mediaType`, every book-level monitor flag false,
+   only the requested format's `*MonitorFuture` gate true, and search-on-add
+   false. If the author exists but the work does not, post the selected work
+   with the local `authorId` and a neutral requested-format edition
+   placeholder (free-text lookup editions are never carried into writes).
+6. After any add, wait for the catalog to settle (see "Catalog settling").
+7. Resolve the target row: identity match (exact `foreignBookId`, title tier
+   only when the selection has no work id), format-bound, multi-book titles
+   rejected. Sparse metadata does not block resolution.
+8. Re-resolve edition-aware: fetch `/edition?bookId=...` for every matching
+   row, disambiguate pockets by usable requested-format editions, choose one
+   edition via `readingFormatId` (English preferred, junk demoted, projected
+   edition honored). No usable edition stops with an actionable error and a
+   log of what the server offered.
+9. Read the author; enable and re-verify the requested format's
+   `*MonitorFuture` gate if needed.
+10. Select the edition with `PUT /book/{id}` (complete body,
+    `anyEditionOk: false`, exactly one `monitored: true, manualAdd: true`
+    edition).
+11. `PUT /book/monitor` with `{"bookIds":[id],"monitored":true}`.
+12. Re-read `/book/{id}` and `/edition?bookId=...`; require the row still
+    matches, the row is monitored for the requested format, and exactly one
+    requested-format edition — the chosen one — is monitored. Any miss stops
+    before search.
+13. `POST /command` `{"name":"BookSearch","bookIds":[id]}` and require a valid
+    acknowledgement before reporting success.
+14. Retries are convergent with bounded deduplication: stop for an available
+    file, an exact queued/started `BookSearch`, or a recent in-process
+    acknowledgement; otherwise repair partial state through steps 8-13. Never
+    create duplicate authors or queue a second concurrent search.
 
-The request uses an explicit allowlist and starts all book and edition monitor
-flags false. Every write-path change remains beta until the exact candidate
-image passes a disposable-library live canary covering new-author settle, clear
-multi-book rejection, edition selection, strict read-back, partial-state retry,
-and `BookSearch` acknowledgement. Sanitized fixtures and read-only evidence
-cannot prove that a private Chaptarr mutation still persists.
-
-Network calls need explicit connect and total-request timeouts. Polling needs a
-deadline and cancellation when the Discord interaction is no longer usable.
-The async runtime must not be blocked by synchronous waits.
-
-### New-author payload requirements
-
-The payload below shows the required semantics; values are illustrative:
-
-```json
-{
-  "title": "Selected title",
-  "foreignBookId": "provider:work-id",
-  "monitored": false,
-  "ebookMonitored": false,
-  "audiobookMonitored": false,
-  "rootFolderPath": "/selected-format-root",
-  "ebookQualityProfileId": 11,
-  "audiobookQualityProfileId": 12,
-  "ebookMetadataProfileId": 21,
-  "audiobookMetadataProfileId": 22,
-  "author": {
-    "authorName": "Selected author",
-    "foreignAuthorId": "provider:author-id",
-    "ebookQualityProfileId": 11,
-    "audiobookQualityProfileId": 12,
-    "ebookMetadataProfileId": 21,
-    "audiobookMetadataProfileId": 22,
-    "rootFolderPath": "/selected-format-root",
-    "ebookRootFolderPath": "/ebook-root",
-    "audiobookRootFolderPath": "/audiobook-root",
-    "ebookMonitorFuture": true,
-    "audiobookMonitorFuture": false,
-    "monitored": true,
-    "monitorNewItems": "none",
-    "addOptions": {
-      "monitor": "none",
-      "searchForMissingBooks": false
-    }
-  },
-  "addOptions": {
-    "searchForNewBook": false
-  }
-}
-```
-
-After the row resolves, the requested format is verified at the author level
-and enabled on the one selected book row. Starting every book row unmonitored
-prevents one format request from accidentally monitoring every edition or the
-other format.
+Every write-path change remains beta until the exact candidate image passes a
+disposable-library live canary covering new-author settle, multi-book
+rejection, edition selection, strict read-back, partial-state retry, and
+`BookSearch` acknowledgement. Fixtures cannot prove that a mutation persists.
 
 ## Fixture provenance
 
-Fixtures live in `doplarr/tests/fixtures/chaptarr/`. All titles, names, IDs,
-paths, dates, and URLs are synthetic. No Moonrock user, library, API key, or
-private hostname appears in them.
+Fixtures live in `doplarr/tests/fixtures/chaptarr/`. All titles, names, ids,
+paths, dates, and URLs are synthetic. No user, library, API key, or private
+hostname appears in them. Every shape follows the serializer contract above;
+each row lists the source mechanism it models.
 
-| Fixture | Evidence represented |
+| Fixture | Shape modeled (source) |
 | --- | --- |
-| `system_status.json` | Live `0.9.720.0` status discriminator |
-| `lookup.json` | Live lookup fields, local ebook/audiobook arrays, relative and absolute cover shapes; junk row added synthetically to preserve the legacy filter regression |
-| `openlibrary_search.json` | Official Search API `cover_i` shape with exact and non-matching title/author rows for cover-enrichment tests |
-| `author.json` | Fields used by live author resolution and the two monitor gates |
-| `book_available.json` | `0.9.720.0` row-oriented format/file/statistics shape |
-| `book_processing.json` | Row-oriented monitored/grabbed state with no files |
+| `system_status.json` | Status discriminator at the tested 0.9.936 baseline |
+| `lookup.json` | Free-text autocomplete projections: `gr:` ids, audiobook `mediaType` default, discriminator-free monitored editions, proxied `url`/`remoteCover` with absolute `remoteUrl`, local bridge arrays, junk row for the client-side filter (`BookInfoProxy.cs:3757-3828`, `BookLookupController.cs:223-250`) |
+| `lookup_audiobook_projection.json` | Same free-text shape, single result, no local bridges |
+| `openlibrary_search.json` | Official Search API `cover_i` shape with exact and non-matching rows |
+| `author.json` | Local author row: normalized `hc:` identity, per-format gates and profile ids |
+| `book_available.json` | `/book` row with files, no `editions`/`grabbed` keys, `remoteCover: ""` (`BookResource.cs:142-259`) |
+| `book_processing.json` | Monitored, file-less audiobook row (in-flight via monitor flags, never `grabbed`) |
 | `book_unmonitored.json` | Resolved row eligible for the monitor sequence |
-| `book_placeholder.json` | Legacy live-test placeholder invariant (`default-*`, no date, no images) |
-| `quality_profiles.json` | Observed string `profileType` discriminators |
-| `metadata_profiles.json` | Observed integer `profileType` discriminators |
-| `root_folders.json` | Required root identity/path/accessibility fields |
-| `post_book_response.json` | Legacy-observed created-book response carrying top-level `authorId`; exact values are synthetic |
-| `put_monitor_response.json` | Legacy-observed 202 status snippet; text is illustrative and must not be parsed for verification |
-| `command_response.json` | Servarr-style queued-command acknowledgement used by Chaptarr; only acknowledgement is relevant and all values are illustrative |
+| `book_sparse.json` | Sparse upstream metadata: no `releaseDate`/`images`/`foreignEditionId` keys — requestable, not a placeholder (`Edition.cs:89` dead fallback flag) |
+| `edition_formats.json` | `/edition` rows: provider-text `format`, nullable `readingFormatId` 1/2/3 plus a legacy row without it (`Edition.cs:41,58`, `EditionResource.cs`) |
+| `quality_profiles.json` | String `profileType` (`QualityProfileResource.cs:15`) |
+| `metadata_profiles.json` | Numeric `profileType` with `General = 0` (`MetadataProfileResource.cs:14,86`) |
+| `root_folders.json` | Nested settings present only when configured, `folderType` ints, flat mirrors (`RootFolderResource.cs:39-69,399-400`) |
+| `root_folders_nested.json` | The same contract as captured live: one configured format per root |
+| `post_book_response.json` | 201-path created row without null keys or minted placeholder ids |
+| `put_monitor_response.json` | Non-authoritative acknowledgement snippet; never parsed for verification |
+| `command_response.json` | Servarr-style queued-command acknowledgement; only acknowledgement is relevant |
 
-The three mutation-response fixtures are intentionally non-authoritative. The
-implementation must deserialize them tolerantly, then establish truth through
+The mutation-response fixtures are intentionally non-authoritative. The
+implementation deserializes them tolerantly, then establishes truth through
 the read-back steps above.
 
 ## Drift policy
 
 Chaptarr is pre-1.0, so a patch-looking release can still change an API shape.
-Compatibility is maintained as follows:
 
 - Parse only fields this contract uses and tolerate unknown fields.
-- Treat optional ranking, status, and cover fields as nullable and type-drifting
-  where older responses have demonstrated number/string variation.
 - Require `appName: "Chaptarr"` and a non-empty live version at startup.
-  `0.9.720.x` is the tested baseline; a different non-empty version receives a
+  `0.9.936.x` is the tested baseline; a different non-empty version receives a
   clear untested-version warning.
 - Run the exact candidate image with `--check /config.toml` before Discord
-  startup. The command must exercise status, root, quality-profile, and
-  metadata-profile parsing, emit only a sanitized summary, and exit without
-  constructing a Discord client. A version outside the tested line must produce
-  an explicit `unsupported` report and nonzero exit even though normal startup
-  retains warning-only compatibility behavior.
-- If required identity or format fields are absent, disable Chaptarr writes for
-  that interaction and return a useful compatibility error. Do not guess.
-- Before claiming support for a new release, run read-only lookup/detail,
-  profile, root, and status probes; sanitize any new shapes; update these
-  fixtures; and run contract tests.
+  startup. The command exercises status, root, quality-profile, and
+  metadata-profile parsing, emits only a sanitized summary, and exits without
+  constructing a Discord client. A version outside the tested line produces an
+  explicit `unsupported` report and nonzero exit.
+- If required identity or format fields are absent, disable Chaptarr writes
+  for that interaction and return a useful compatibility error. Do not guess.
+- Before claiming support for a new release, re-derive this contract's cited
+  mechanisms against the new source ref, update fixtures to the serializer
+  truth, and run the contract tests. Handling for mid-line upstream drift is
+  sprint-3 scope.
 - A write-path change also requires the exact candidate image to pass the
-  disposable live canary in `RELEASE_CHECKLIST.md`. Record its commit, image
-  digest, Chaptarr version, results, and rollback artifact. Read-only evidence
-  cannot prove a mutation still persists.
-- Never regenerate a broad Readarr client from an unrelated OpenAPI document.
-  Chaptarr is Readarr-like, but its format-specific fields and monitor behavior
-  are the reason this narrow contract exists.
+  disposable live canary in `RELEASE_CHECKLIST.md`. Read-only evidence cannot
+  prove a mutation still persists.
+- **Never codegen from `openapi.json`.** The spec is committed
+  (`src/Chaptarr.Api.V1/openapi.json`) but mistypes `CommandResource.body` and
+  parameter optionality, so generated models would encode wrong contracts with
+  false confidence. It is useful as a route inventory only. The handwritten
+  narrow client — and this document — remain the contract.
 
-Rust Doplarr's own developer guide explicitly supports adding a backend through
-the `MediaBackend` and `MediaItem` traits. Keeping Chaptarr behind that provider
-boundary makes this compatibility layer replaceable without forking Discord
-interaction machinery; see [Doplarr developer documentation][doplarr-dev].
+Rust Doplarr's own developer guide supports adding a backend through the
+`MediaBackend` and `MediaItem` traits. Keeping Chaptarr behind that provider
+boundary keeps this compatibility layer replaceable; see
+[Doplarr developer documentation][doplarr-dev].
 
-[chaptarr-tags]: https://hub.docker.com/r/robertlordhood/chaptarr/tags
 [openlibrary-search]: https://openlibrary.org/dev/docs/api/search
 [openlibrary-covers]: https://openlibrary.org/dev/docs/api/covers
 [doplarr-dev]: https://github.com/activexray/doplarr_rs/blob/main/README_DEVELOPER.md
