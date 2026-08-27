@@ -334,11 +334,9 @@ pub(super) fn preferred_book(
         .collect();
     candidates.sort_by_key(|row| {
         let tier = title_match_tier(string_at(row, "title"), &selected.title);
-        let complete = book_complete(row);
         let shape = parse_book(row).unwrap_or_default();
         (
             tier,
-            complete,
             shape.ratings.popularity.to_bits(),
             shape.ratings.votes,
             shape.release_date,
@@ -562,8 +560,8 @@ pub(super) fn preferred_edition_index(
 /// Pick which duplicate local pocket of the selected work to monitor. Import
 /// bugs can leave twin rows for one `foreignBookId` whose edition sets are not
 /// equivalent, so a row that actually carries usable requested-format editions
-/// beats every row that does not; the usual completeness/popularity ordering
-/// only breaks ties. Returns an index into `rows`.
+/// beats every row that does not; the usual title/popularity ordering only
+/// breaks ties. Returns an index into `rows`.
 pub(super) fn preferred_pocket(
     rows: &[(Value, Vec<Value>)],
     format: ChaptarrFormat,
@@ -578,7 +576,6 @@ pub(super) fn preferred_pocket(
             (
                 usable > 0,
                 title_match_tier(string_at(row, "title"), &selected.title),
-                book_complete(row),
                 usable,
                 shape.ratings.popularity.to_bits(),
                 shape.ratings.votes,
@@ -649,20 +646,6 @@ pub(super) fn title_match_tier(candidate: &str, requested: &str) -> u8 {
     }
 
     u8::from(is_subtitle_variant(candidate, requested) || is_subtitle_variant(requested, candidate))
-}
-
-pub(super) fn book_complete(value: &Value) -> bool {
-    let Some(book) = parse_book(value) else {
-        return false;
-    };
-    book.release_date.is_some()
-        && !book.images.is_empty()
-        && !book.foreign_edition_id.is_empty()
-        && !book.foreign_edition_id.starts_with("default-")
-}
-
-pub(super) fn needs_author_refresh(book: Option<&Value>) -> bool {
-    book.is_some_and(|row| !book_complete(row))
 }
 
 /// Discord needs an absolute URL. Chaptarr rewrites every `images[].url` to a
@@ -1252,25 +1235,35 @@ mod tests {
     }
 
     #[test]
-    fn placeholder_is_not_complete() {
-        assert!(!book_complete(
-            &json!({"releaseDate":"2020-01-01","images":[{"url":"x"}],"foreignEditionId":"default-1"})
-        ));
-        assert!(book_complete(
-            &json!({"releaseDate":"2020-01-01","images":[{"url":"x"}],"foreignEditionId":"hc:1"})
-        ));
-    }
-
-    #[test]
-    fn sparse_fixture_still_trips_the_legacy_completeness_gate() {
-        // 0.9.936 mints no placeholders; a row with no releaseDate/images is
-        // ordinary sparse upstream metadata (Edition.cs, EditionService.cs).
-        // The completeness gate has not been retired yet, so this documents
-        // that a legitimate sparse row is currently still rejected by it.
+    fn sparse_rows_are_ordinary_selectable_metadata() {
+        // 0.9.936 mints no placeholders; a row with no releaseDate, images,
+        // or foreignEditionId is ordinary sparse upstream metadata
+        // (Edition.cs - IsFallbackEdition is dead, no default-* ids exist)
+        // and must resolve like any other identity-matched row.
         let sparse: Value = serde_json::from_str(SPARSE).unwrap();
-        assert!(!book_complete(&sparse));
-        assert!(needs_author_refresh(Some(&sparse)));
-        assert!(!needs_author_refresh(None));
+        let selected = selected_book("The Clockwork Orchard", "gr:work-1001");
+        assert!(local_row_matches_item(
+            &sparse,
+            ChaptarrFormat::Ebook,
+            &selected
+        ));
+        assert_eq!(
+            preferred_book(
+                std::slice::from_ref(&sparse),
+                ChaptarrFormat::Ebook,
+                &selected
+            )
+            .and_then(|row| positive_id(row.get("id"))),
+            Some(4199)
+        );
+        let rows = vec![(
+            sparse,
+            vec![json!({"id": 8199, "format": "Kindle Edition", "readingFormatId": 3})],
+        )];
+        assert_eq!(
+            preferred_pocket(&rows, ChaptarrFormat::Ebook, &selected),
+            Some(0)
+        );
     }
 
     #[test]

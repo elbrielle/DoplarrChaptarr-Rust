@@ -99,7 +99,6 @@ struct CatalogFingerprint {
 #[derive(Debug, Clone, PartialEq, Eq, PartialOrd, Ord)]
 struct TargetFingerprint {
     book_id: i64,
-    complete: bool,
     release_date: String,
     foreign_edition_id: String,
     editions: Vec<EditionFingerprint>,
@@ -479,7 +478,7 @@ impl Chaptarr {
             for attempt in 0..RESOLVE_ATTEMPTS {
                 let rows = self.books_for_author(author_id).await?;
                 last = preferred_book(&rows, self.format, selected);
-                if last.as_ref().is_some_and(book_complete) {
+                if last.is_some() {
                     return Ok(last);
                 }
                 if attempt + 1 < RESOLVE_ATTEMPTS {
@@ -507,7 +506,11 @@ impl Chaptarr {
             .iter()
             .filter(|row| local_row_matches_item(row, self.format, selected))
             .collect();
-        if require_target && !matching.iter().any(|target| book_complete(target)) {
+        // A target is its row's presence with a matching identity; sparse
+        // metadata (no releaseDate/images) is ordinary 0.9.936 upstream data,
+        // not an unsettled placeholder (Edition.cs - IsFallbackEdition is
+        // dead, no default-* ids are minted).
+        if require_target && matching.is_empty() {
             return Ok(None);
         }
         let mut targets = Vec::new();
@@ -534,7 +537,6 @@ impl Chaptarr {
             editions.sort();
             targets.push(TargetFingerprint {
                 book_id,
-                complete: book_complete(row),
                 release_date: string_at(row, "releaseDate").to_string(),
                 foreign_edition_id: string_at(row, "foreignEditionId").to_string(),
                 editions,
@@ -1316,28 +1318,7 @@ impl MediaBackend for Chaptarr {
                 .await?;
             }
         }
-        if book.as_ref().is_none_or(|row| !book_complete(row)) {
-            book = self.poll_target(author_id, &item.book).await?;
-        }
-        if needs_author_refresh(book.as_ref()) {
-            // RefreshAuthor is intentionally guarded and only runs after the
-            // user has pressed Request, when the exact target exists as an
-            // unresolved placeholder. A missing target is never refreshed.
-            // The refresh re-runs catalog work, so it gets the same settle
-            // wait before any monitoring happens.
-            self.send_json(
-                Method::POST,
-                "/command",
-                &json!({"name": "RefreshAuthor", "authorId": author_id}),
-            )
-            .await?;
-            self.wait_for_catalog_settle(
-                author_id,
-                &item.book.author.author_name,
-                &item.book,
-                true,
-            )
-            .await?;
+        if book.is_none() {
             book = self.poll_target(author_id, &item.book).await?;
         }
         let book = book.ok_or_else(|| {
@@ -1351,17 +1332,11 @@ impl MediaBackend for Chaptarr {
                 "Chaptarr resolved a different work, so nothing was monitored or searched.".into()
             ));
         }
-        if !book_complete(&book) {
-            bail!(UserFacingError(format!(
-                "Chaptarr only has an unresolved placeholder for this {}. Try refreshing the author in Chaptarr.",
-                format_name(self.format)
-            )));
-        }
 
         // Re-resolve edition-aware: duplicate import pockets are deduped by
         // which row carries usable requested-format editions, and the edition
-        // to monitor is chosen from `/edition` data (the book resource always
-        // reports an empty editions array and must never be trusted for this).
+        // to monitor is chosen from `/edition` data (`/book` responses never
+        // carry an editions key and must never be trusted for this).
         let (book, editions) = self
             .resolve_pocket(author_id, &item.book)
             .await?
@@ -1371,12 +1346,6 @@ impl MediaBackend for Chaptarr {
                     format_name(self.format)
                 ))
             })?;
-        if !book_complete(&book) {
-            bail!(UserFacingError(format!(
-                "Chaptarr only has an unresolved placeholder for this {}. Try refreshing the author in Chaptarr.",
-                format_name(self.format)
-            )));
-        }
         let Some(chosen) = preferred_edition_index(&editions, self.format, &item.book) else {
             warn!(
                 book_id = ?positive_id(book.get("id")),
@@ -1995,6 +1964,151 @@ mod tests {
         assert!(recorded[17].contains("\"monitored\":true"));
         assert!(recorded[20].contains("\"name\":\"BookSearch\""));
         assert!(recorded[20].contains("\"bookIds\":[5101]"));
+    }
+
+    #[tokio::test]
+    async fn sparse_metadata_ebook_request_resolves_monitors_verifies_and_searches() {
+        // The sprint demo scenario: a row with no releaseDate, images, or
+        // foreignEditionId is ordinary 0.9.936 upstream data. It must resolve,
+        // select its edition via readingFormatId, monitor, verify, and queue
+        // BookSearch - with no RefreshAuthor repair path anywhere.
+        let author = json!({
+            "id": 7001,
+            "authorName": "Mara Vale",
+            "foreignAuthorId": "gr:author-2001",
+            "monitored": true,
+            "ebookMonitorFuture": true,
+            "audiobookMonitorFuture": false
+        });
+        let sparse_book = json!({
+            "id": 4199,
+            "authorId": 7001,
+            "title": "The Clockwork Orchard",
+            "foreignBookId": "gr:work-1001",
+            "mediaType": "ebook",
+            "monitored": false,
+            "ebookMonitored": false,
+            "hasFiles": false
+        });
+        let monitored_sparse_book = json!({
+            "id": 4199,
+            "authorId": 7001,
+            "title": "The Clockwork Orchard",
+            "foreignBookId": "gr:work-1001",
+            "mediaType": "ebook",
+            "monitored": true,
+            "ebookMonitored": true,
+            "hasFiles": false
+        });
+        let kindle_edition = json!({
+            "id": 8199,
+            "bookId": 4199,
+            "title": "The Clockwork Orchard",
+            "foreignEditionId": "gr:edition-3001",
+            "format": "Kindle Edition",
+            "readingFormatId": 3,
+            "isEbook": true,
+            "language": "eng",
+            "monitored": false,
+            "manualAdd": false
+        });
+        let monitored_kindle_edition = json!({
+            "id": 8199,
+            "bookId": 4199,
+            "title": "The Clockwork Orchard",
+            "foreignEditionId": "gr:edition-3001",
+            "format": "Kindle Edition",
+            "readingFormatId": 3,
+            "isEbook": true,
+            "language": "eng",
+            "monitored": true,
+            "manualAdd": true
+        });
+        let mut responses = vec![
+            "[]".to_string(),
+            json!({"authorId": 7001}).to_string(),
+            author.to_string(),
+        ];
+        for _ in 0..SETTLE_STABLE_SAMPLES {
+            responses.extend([
+                "[]".to_string(),
+                json!([sparse_book.clone()]).to_string(),
+                json!([kindle_edition.clone()]).to_string(),
+            ]);
+        }
+        responses.extend([
+            json!([sparse_book.clone()]).to_string(),
+            json!([sparse_book]).to_string(),
+            json!([kindle_edition]).to_string(),
+            author.to_string(),
+            "{}".to_string(),
+            "{}".to_string(),
+            monitored_sparse_book.to_string(),
+            json!([monitored_kindle_edition]).to_string(),
+            COMMAND_RESPONSE.to_string(),
+        ]);
+        let (base_url, requests, server) = mock_api(responses).await;
+        let mut chaptarr = backend(ChaptarrFormat::Ebook);
+        chaptarr.base_url = base_url;
+        chaptarr.client = reqwest::Client::builder()
+            .timeout(Duration::from_secs(2))
+            .build()
+            .unwrap();
+        let mut item = lookup_item();
+        item.existing_book_id = None;
+
+        chaptarr
+            .request(Vec::new(), Box::new(item), 1234)
+            .await
+            .unwrap();
+        timeout(Duration::from_secs(2), server)
+            .await
+            .expect("mock server should finish")
+            .unwrap();
+
+        let recorded = requests.lock().await;
+        let lines: Vec<_> = recorded
+            .iter()
+            .map(|request| request_line(request))
+            .collect();
+        assert_eq!(
+            lines,
+            vec![
+                "GET /api/v1/author HTTP/1.1",
+                "POST /api/v1/book HTTP/1.1",
+                "GET /api/v1/author/7001 HTTP/1.1",
+                "GET /api/v1/command HTTP/1.1",
+                "GET /api/v1/book?authorId=7001 HTTP/1.1",
+                "GET /api/v1/edition?bookId=4199 HTTP/1.1",
+                "GET /api/v1/command HTTP/1.1",
+                "GET /api/v1/book?authorId=7001 HTTP/1.1",
+                "GET /api/v1/edition?bookId=4199 HTTP/1.1",
+                "GET /api/v1/command HTTP/1.1",
+                "GET /api/v1/book?authorId=7001 HTTP/1.1",
+                "GET /api/v1/edition?bookId=4199 HTTP/1.1",
+                "GET /api/v1/book?authorId=7001 HTTP/1.1",
+                "GET /api/v1/book?authorId=7001 HTTP/1.1",
+                "GET /api/v1/edition?bookId=4199 HTTP/1.1",
+                "GET /api/v1/author/7001 HTTP/1.1",
+                "PUT /api/v1/book/4199 HTTP/1.1",
+                "PUT /api/v1/book/monitor HTTP/1.1",
+                "GET /api/v1/book/4199 HTTP/1.1",
+                "GET /api/v1/edition?bookId=4199 HTTP/1.1",
+                "POST /api/v1/command HTTP/1.1",
+            ]
+        );
+        assert!(
+            recorded
+                .iter()
+                .all(|request| !request.contains("RefreshAuthor")),
+            "no code path may issue RefreshAuthor"
+        );
+        assert!(recorded[16].contains("\"anyEditionOk\":false"));
+        assert!(recorded[16].contains("\"manualAdd\":true"));
+        assert_eq!(recorded[16].matches("\"monitored\":true").count(), 1);
+        assert!(recorded[17].contains("\"bookIds\":[4199]"));
+        assert!(recorded[20].contains("\"name\":\"BookSearch\""));
+        assert!(recorded[20].contains("\"bookIds\":[4199]"));
     }
 
     #[tokio::test]
