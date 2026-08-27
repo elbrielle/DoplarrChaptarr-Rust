@@ -464,7 +464,8 @@ impl Chaptarr {
         self.get(&format!("/book/{id}"), &[]).await
     }
 
-    /// The book resource always reports `"editions": []`; this endpoint is the
+    /// A `/book` response never carries an `editions` key at all
+    /// (`BookResource.cs:137-259` never assigns it); this endpoint is the
     /// only source of edition truth and every edition read must go through it.
     async fn editions_for_book(&self, book_id: i64) -> Result<Vec<Value>> {
         self.get("/edition", &[("bookId", book_id.to_string())])
@@ -602,8 +603,8 @@ impl Chaptarr {
 
     /// Resolve the one local row to monitor, edition-aware. Duplicate import
     /// pockets for the same work are disambiguated by which row actually has
-    /// usable requested-format editions (read from `/edition`, never from the
-    /// book resource, which always reports an empty editions array).
+    /// usable requested-format editions (read from `/edition`; a `/book`
+    /// response never carries an editions key).
     async fn resolve_pocket(
         &self,
         author_id: i64,
@@ -1220,20 +1221,13 @@ impl MediaBackend for Chaptarr {
             .as_ref()
             .and_then(|a| positive_id(a.get("id")))
             .context("Chaptarr could not resolve the requested author")?;
-        if author_added {
-            // A brand-new author's monitor flags are rewritten once by the
-            // scan handler while addOptions is still set. Monitoring before
-            // that latch clears is how a request dies silently, so nothing
-            // below runs until it has.
-            self.wait_for_catalog_settle(author_id, &item.book.author.author_name)
-                .await?;
-        } else {
-            // A retry can land while the original add's import is still
-            // running, and the same one-shot rewrite hazard applies until
-            // addOptions clears. For a long-settled author the composite
-            // check passes on the first look.
-            self.wait_for_catalog_settle(author_id, &item.book.author.author_name)
-                .await?;
+        // A brand-new author's monitor flags are rewritten once by the scan
+        // handler while addOptions is still set, and a retry can land while
+        // that original import is still running - so no write ever precedes
+        // the latch. A long-settled author passes on the first look.
+        self.wait_for_catalog_settle(author_id, &item.book.author.author_name)
+            .await?;
+        if !author_added {
             let (refreshed_author, refreshed_book, refreshed_rows) =
                 self.locate_existing(&item).await?;
             if let Some(refreshed_author) = refreshed_author {
