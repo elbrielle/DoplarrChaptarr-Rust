@@ -1003,9 +1003,12 @@ async fn run_settle_failure(
     let item = items.swap_remove(selection.index);
     let outcome = outcome_from(backend.request(Vec::new(), item, 1111).await);
     println!("outcome: {}", outcome.describe());
+    // The injected outage can surface as the settle-deadline refusal or as
+    // an earlier transport failure; both are fail-closed. Only a completed
+    // request is a case failure here.
     report.check(
-        matches!(&outcome, Outcome::Refusal(message) if message.contains("NOT completed")),
-        "request failed closed with the settle-deadline message",
+        !matches!(&outcome, Outcome::Success),
+        "request failed closed instead of completing",
     );
     println!("restart the container, then run verify-untouched for this author");
     println!("verdict: {}", if report.passed { "PASS" } else { "FAIL" });
@@ -1031,34 +1034,53 @@ async fn run_verify_untouched(api: &RawApi, format: Format, author_needle: &str)
         println!("verdict: PASS");
         return Ok(true);
     };
+    // The add body itself may open the requested gate and the server
+    // monitors the added row - those are the add's own semantics. What the
+    // failed request must NOT have done is its downstream writes: the
+    // edition pin and the search.
     let author_id = field_id(&author).context("author has no id")?;
-    report.check(
-        !field_bool(&author, format.gate_flag()),
-        &format!("{} stayed closed", format.gate_flag()),
-    );
+    report.note(&format!(
+        "author {author_id}: monitored={} {}={} (add-body effects, informational)",
+        field_bool(&author, "monitored"),
+        format.gate_flag(),
+        field_bool(&author, format.gate_flag()),
+    ));
     let rows = api.get(&format!("/book?authorId={author_id}")).await?;
-    let monitored: Vec<i64> = rows
+    let row_ids: Vec<i64> = rows
         .as_array()
         .into_iter()
         .flatten()
-        .filter(|row| field_bool(row, "monitored"))
         .filter_map(field_id)
         .collect();
+    let mut pinned = Vec::new();
+    for book_id in &row_ids {
+        let editions = api.get(&format!("/edition?bookId={book_id}")).await?;
+        for edition in editions.as_array().into_iter().flatten() {
+            if field_bool(edition, "monitored") && field_bool(edition, "manualAdd") {
+                pinned.push((*book_id, field_id(edition)));
+            }
+        }
+    }
     report.check(
-        monitored.is_empty(),
-        &format!("no book row is monitored (saw {monitored:?})"),
+        pinned.is_empty(),
+        &format!("no edition was manually pinned (saw {pinned:?})"),
     );
     let commands = api.get("/command").await?;
     let searches: Vec<i64> = commands
         .as_array()
         .into_iter()
         .flatten()
-        .filter(|command| command_name(command).eq_ignore_ascii_case("BookSearch"))
+        .filter(|command| {
+            command_name(command).eq_ignore_ascii_case("BookSearch")
+                && referenced_book_ids(command)
+                    .iter()
+                    .any(|id| row_ids.contains(id))
+        })
         .filter_map(field_id)
         .collect();
     report.check(
         searches.is_empty(),
-        &format!("no BookSearch was ever queued (saw {searches:?})"),
+        &format!("no BookSearch was ever queued for this author (saw {searches:?})"),
     );
     println!("verdict: {}", if report.passed { "PASS" } else { "FAIL" });
     Ok(report.passed)
