@@ -40,47 +40,112 @@ pub(super) fn open_library_cover_map(result: OpenLibraryResponse) -> CoverMap {
     covers
 }
 
+/// The seeded metadata profile named `None` filters everything
+/// (`MinPopularity 1e10`, `MetadataProfileService.cs:32-33`); selecting it
+/// implicitly would break every import, so only explicit config may pick it.
+const METADATA_NONE_SENTINEL: &str = "None";
+
 pub(super) fn resolve_profile(
     profiles: &[Profile],
     format: ChaptarrFormat,
     metadata: bool,
     configured: Option<&str>,
 ) -> Result<i32> {
-    let expected_number = match format {
-        ChaptarrFormat::Ebook => 2,
-        ChaptarrFormat::Audiobook => 1,
-    };
-    let expected_string = format_name(format);
-    let matches: Vec<_> = profiles
+    if metadata {
+        resolve_metadata_profile(profiles, format, configured)
+    } else {
+        resolve_quality_profile(profiles, format, configured)
+    }
+}
+
+fn resolve_quality_profile(
+    profiles: &[Profile],
+    format: ChaptarrFormat,
+    configured: Option<&str>,
+) -> Result<i32> {
+    let expected = format_name(format);
+    let typed: Vec<_> = profiles
         .iter()
-        .filter(|p| {
-            if metadata {
-                p.profile_type.as_i64() == Some(expected_number)
-            } else {
-                p.profile_type.as_str() == Some(expected_string)
-            }
-        })
+        .filter(|p| p.profile_type.as_str() == Some(expected))
+        .collect();
+    let matches: Vec<_> = typed
+        .iter()
         .filter(|p| configured.is_none_or(|name| p.name == name))
         .collect();
     if matches.len() == 1 {
         return Ok(matches[0].id);
     }
-    let kind = if metadata { "metadata" } else { "quality" };
-    let available = profiles
+    let available = typed
         .iter()
-        .filter(|p| {
-            if metadata {
-                p.profile_type.as_i64() == Some(expected_number)
-            } else {
-                p.profile_type.as_str() == Some(expected_string)
-            }
-        })
         .map(|p| p.name.as_str())
         .collect::<Vec<_>>()
         .join(", ");
     bail!(
-        "Chaptarr {expected_string} {kind} profile selection is ambiguous. Configure an exact name; available: [{available}]"
+        "Chaptarr {expected} quality profile selection is ambiguous. Configure an exact name; available: [{available}]"
     )
+}
+
+/// A fresh install seeds `Standard` and `None`, both type General (0) — the
+/// seeder never sets `ProfileType` (`MetadataProfileService.cs:647-701`) and
+/// the model defaults it (`MetadataProfile.cs:6-33`) — while the server
+/// accepts a General profile wherever a typed one is wanted
+/// (`MetadataProfileController.cs:131-142`). So a typed profile (1/2) is
+/// preferred but General profiles other than the `None` sentinel are a valid
+/// fallback; requiring a typed match would fail configuration validation on
+/// every default instance.
+fn resolve_metadata_profile(
+    profiles: &[Profile],
+    format: ChaptarrFormat,
+    configured: Option<&str>,
+) -> Result<i32> {
+    let label = format_name(format);
+    if let Some(name) = configured {
+        let named: Vec<_> = profiles.iter().filter(|p| p.name == name).collect();
+        if named.len() == 1 {
+            return Ok(named[0].id);
+        }
+        let available = profile_names(profiles.iter());
+        bail!(
+            "Chaptarr {label} metadata profile \"{name}\" did not match exactly one profile; available: [{available}]"
+        )
+    }
+    let expected_number = match format {
+        ChaptarrFormat::Ebook => 2,
+        ChaptarrFormat::Audiobook => 1,
+    };
+    let typed: Vec<_> = profiles
+        .iter()
+        .filter(|p| p.profile_type.as_i64() == Some(expected_number))
+        .collect();
+    match typed.len() {
+        1 => return Ok(typed[0].id),
+        0 => {}
+        _ => {
+            let available = profile_names(typed.into_iter());
+            bail!(
+                "Chaptarr {label} metadata profile selection is ambiguous. Configure an exact name; available: [{available}]"
+            )
+        }
+    }
+    let general: Vec<_> = profiles
+        .iter()
+        .filter(|p| p.profile_type.as_i64() == Some(0))
+        .filter(|p| p.name != METADATA_NONE_SENTINEL)
+        .collect();
+    if general.len() == 1 {
+        return Ok(general[0].id);
+    }
+    let available = profile_names(profiles.iter());
+    bail!(
+        "Chaptarr has no unambiguous {label} metadata profile (no format-typed profile, and not exactly one General profile besides \"{METADATA_NONE_SENTINEL}\"). Configure an exact name; available: [{available}]"
+    )
+}
+
+fn profile_names<'a>(profiles: impl Iterator<Item = &'a Profile>) -> String {
+    profiles
+        .map(|p| p.name.as_str())
+        .collect::<Vec<_>>()
+        .join(", ")
 }
 
 /// True when this root can serve the format: a typed root (`folderType`
@@ -843,6 +908,8 @@ mod tests {
     const SPARSE: &str = include_str!("../../../tests/fixtures/chaptarr/book_sparse.json");
     const QUALITY: &str = include_str!("../../../tests/fixtures/chaptarr/quality_profiles.json");
     const METADATA: &str = include_str!("../../../tests/fixtures/chaptarr/metadata_profiles.json");
+    const METADATA_FRESH: &str =
+        include_str!("../../../tests/fixtures/chaptarr/metadata_profiles_fresh.json");
     const ROOTS: &str = include_str!("../../../tests/fixtures/chaptarr/root_folders.json");
     const LIVE_ROOTS: &str =
         include_str!("../../../tests/fixtures/chaptarr/root_folders_nested.json");
@@ -948,6 +1015,61 @@ mod tests {
             resolve_root(&roots, ChaptarrFormat::Audiobook, None).unwrap(),
             "/library/audiobooks"
         );
+    }
+
+    #[test]
+    fn fresh_install_metadata_seed_resolves_to_standard_for_both_formats() {
+        // A default instance has exactly `Standard` + `None`, both type
+        // General (0) — the seeder never sets ProfileType
+        // (MetadataProfileService.cs:647-701, MetadataProfile.cs:6-33) — so
+        // requiring a typed metadata profile fails startup on every fresh
+        // install. General is accepted wherever a typed profile is wanted
+        // (MetadataProfileController.cs:131-142).
+        let metadata: Vec<Profile> = serde_json::from_str(METADATA_FRESH).unwrap();
+        assert_eq!(
+            resolve_profile(&metadata, ChaptarrFormat::Ebook, true, None).unwrap(),
+            1
+        );
+        assert_eq!(
+            resolve_profile(&metadata, ChaptarrFormat::Audiobook, true, None).unwrap(),
+            1
+        );
+    }
+
+    #[test]
+    fn typed_metadata_profiles_win_and_general_ambiguity_fails_closed() {
+        // The standard fixture has a General `None` next to typed profiles:
+        // the typed profile must win, not tie.
+        let metadata: Vec<Profile> = serde_json::from_str(METADATA).unwrap();
+        assert_eq!(
+            resolve_profile(&metadata, ChaptarrFormat::Ebook, true, None).unwrap(),
+            21
+        );
+        // Two non-`None` General profiles with no typed match is genuine
+        // ambiguity: picking either would be a guess about admin intent.
+        let generals: Vec<Profile> = serde_json::from_value(json!([
+            {"id": 5, "name": "Standard", "profileType": 0},
+            {"id": 6, "name": "Curated", "profileType": 0}
+        ]))
+        .unwrap();
+        let err = resolve_profile(&generals, ChaptarrFormat::Ebook, true, None).unwrap_err();
+        assert!(err.to_string().contains("Configure an exact name"));
+        // Only the sentinel left: nothing is safe to select implicitly.
+        let none_only: Vec<Profile> = serde_json::from_value(json!([
+            {"id": 7, "name": "None", "profileType": 0}
+        ]))
+        .unwrap();
+        assert!(resolve_profile(&none_only, ChaptarrFormat::Ebook, true, None).is_err());
+    }
+
+    #[test]
+    fn explicitly_configured_metadata_name_wins_even_for_the_none_sentinel() {
+        let metadata: Vec<Profile> = serde_json::from_str(METADATA_FRESH).unwrap();
+        assert_eq!(
+            resolve_profile(&metadata, ChaptarrFormat::Ebook, true, Some("None")).unwrap(),
+            2
+        );
+        assert!(resolve_profile(&metadata, ChaptarrFormat::Ebook, true, Some("Typo")).is_err());
     }
 
     #[test]

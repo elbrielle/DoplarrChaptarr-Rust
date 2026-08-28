@@ -1,0 +1,14 @@
+[
+  {
+    "id": 1,
+    "name": "Standard",
+    "profileType": 0,
+    "minPopularity": 350
+  },
+  {
+    "id": 2,
+    "name": "None",
+    "profileType": 0,
+    "minPopularity": 10000000000
+  }
+]

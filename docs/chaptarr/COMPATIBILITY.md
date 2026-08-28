@@ -187,9 +187,27 @@ declarations:
   and its enum is a different one with `General = 0, Audiobook = 1, Ebook = 2`
   (`src/NzbDrone.Core/Profiles/Metadata/MetadataProfile.cs:6-11`).
 
-Resolve configured profile names exactly at startup; a missing or ambiguous
-name fails configuration validation. A missing quality profile for the
-requested media type independently empties that format's searches server-side
+Fresh-install seeding is asymmetric too. First boot seeds one quality
+profile per format — `eBook` (type Ebook, cutoff MOBI) and `Spoken` (type
+Audiobook, cutoff M4B) (`QualityProfileService.cs:118-163`) — but both
+seeded metadata profiles, `Standard` and `None`, are **type General (0)**:
+the seeder never sets `ProfileType` (`MetadataProfileService.cs:647-701`)
+and the model defaults it (`MetadataProfile.cs:6-33`). The server accepts a
+General metadata profile wherever a typed one is wanted — `GET
+/metadataprofile?mediaType=` filters to `General || requested`
+(`MetadataProfileController.cs:131-142`). `None` is a filter-everything
+sentinel (`MinPopularity 1e10`, `MetadataProfileService.cs:32-33`);
+selecting it implicitly would break every import.
+
+Metadata-profile resolution therefore runs in tiers: an explicitly
+configured name always wins, even `None` (the admin said so); otherwise
+exactly one format-typed profile (Audiobook=1/Ebook=2); otherwise exactly
+one General profile excluding any named `None`. Anything else fails closed
+listing the available names. Quality-profile resolution stays typed-only:
+fresh installs seed exactly one per type.
+
+A missing quality profile for the requested media type independently
+empties that format's searches server-side
 (`ReleaseSearchService.cs:106-113`), so profile resolution is a correctness
 gate, not cosmetics.
 
