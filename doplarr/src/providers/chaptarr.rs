@@ -78,6 +78,25 @@ pub struct Chaptarr {
     settle: SettlePacing,
 }
 
+/// What `POST /book` produced: the 201 echo of the canonical row the server
+/// created or deduped to, or the live-observed recoverable conflict (the add
+/// imported the catalog, then refused to pick among duplicate pockets) after
+/// which resolution continues against the imported rows.
+enum AddOutcome {
+    Added(Value),
+    UnresolvedConflict,
+}
+
+/// What `locate_existing` found. `server_associated` is true when the book
+/// came from the lookup row's own local-book id but no identity tier could
+/// confirm it — the server's association for a drift-normalized work.
+struct Located {
+    author: Option<Value>,
+    book: Option<Value>,
+    rows: Vec<Value>,
+    server_associated: bool,
+}
+
 /// Pacing for the post-add settle wait. A 400+ book author takes minutes to
 /// import, and until the one-shot scan handler has run, monitor and edition
 /// writes can be rewritten out from under the request.
@@ -250,7 +269,14 @@ impl Chaptarr {
     /// `ProviderAmbiguityResource` naming the conflicting candidates. The 202
     /// meaning is specific to this route (`PUT /book/monitor` also answers
     /// 202, as ordinary success), so only the add path interprets it.
-    async fn add_book(&self, title: &str, body: &Value) -> Result<Value> {
+    ///
+    /// A fourth live shape exists (0.9.936 canary, 2026-08-28): a 500 whose
+    /// detail is "Requested work ... resolves to multiple local ... books" -
+    /// the add imported the author's catalog and then hit the server's own
+    /// duplicate pockets. That failure is recoverable in-request: the rows
+    /// now exist locally, so the caller re-resolves them through the
+    /// identity chain instead of surfacing an error.
+    async fn add_book(&self, title: &str, body: &Value) -> Result<AddOutcome> {
         debug!(endpoint = "/book", "Chaptarr write");
         let bytes = serde_json::to_vec(body)?;
         let response = self
@@ -304,8 +330,17 @@ impl Chaptarr {
                     %candidates,
                     "Chaptarr reported an ambiguous provider identity"
                 );
+                // A live 0.9.936 409 can carry a bare error resource instead
+                // of the ambiguity shape (observed: a SQLite NOT NULL
+                // failure minting a cross-format row), so fall back to its
+                // message before showing an empty conflict.
                 let conflict = if candidates.is_empty() {
-                    string_at(&ambiguity, "providerId").to_string()
+                    let provider_id = string_at(&ambiguity, "providerId").to_string();
+                    if provider_id.is_empty() {
+                        string_at(&ambiguity, "message").to_string()
+                    } else {
+                        provider_id
+                    }
                 } else {
                     candidates
                 };
@@ -313,7 +348,28 @@ impl Chaptarr {
                     "Chaptarr could not add {title}: its provider identity is ambiguous ({conflict}). Resolve the conflict in Chaptarr, then request it again."
                 )));
             }
-            _ => self.decode_value(response, "/book").await,
+            status => {
+                let result = self.decode_value(response, "/book").await;
+                // Auth and missing-endpoint failures stay terminal; any
+                // other non-success is treated as the recoverable conflict
+                // and resolution continues against the imported rows.
+                if !status.is_success()
+                    && !matches!(
+                        status,
+                        StatusCode::UNAUTHORIZED | StatusCode::FORBIDDEN | StatusCode::NOT_FOUND
+                    )
+                    && let Err(error) = &result
+                    && error.downcast_ref::<UserFacingError>().is_some()
+                {
+                    warn!(
+                        %status,
+                        title,
+                        "Chaptarr rejected the add; resolving against the imported catalog instead"
+                    );
+                    return Ok(AddOutcome::UnresolvedConflict);
+                }
+                result.map(AddOutcome::Added)
+            }
         }
     }
 
@@ -484,13 +540,27 @@ impl Chaptarr {
     /// Locate the local author, the preferred matching book row, and every
     /// book row of that author. The full row set matters because duplicate
     /// import pockets can hold the requested work's real state on a twin row.
-    async fn locate_existing(
-        &self,
-        item: &ChaptarrItem,
-    ) -> Result<(Option<Value>, Option<Value>, Vec<Value>)> {
+    ///
+    /// A lookup row's local-book id is the server's own association between
+    /// the lookup result and a catalog row, and it is authoritative the same
+    /// way the add echo is: the live canary showed the association pointing
+    /// at the correct row whose canonical work id had drifted from the
+    /// lookup's (so no identity tier could confirm it). A format-mismatched
+    /// association is still rejected — the wrong-format row can never serve
+    /// this request.
+    async fn locate_existing(&self, item: &ChaptarrItem) -> Result<Located> {
         if let Some(id) = item.existing_book_id {
             let book = self.get_book(id).await?;
-            if local_row_matches_item(&book, self.format, &item.book) {
+            if local_row_matches_format(&book, self.format) {
+                let server_associated = !local_row_matches_item(&book, self.format, &item.book);
+                if server_associated {
+                    warn!(
+                        book_id = id,
+                        lookup_id = %item.book.foreign_book_id,
+                        local_id = %string_at(&book, "foreignBookId"),
+                        "Trusting Chaptarr's lookup association for a drift-normalized work id"
+                    );
+                }
                 let author_id = positive_id(book.get("authorId"));
                 let author = if let Some(id) = author_id {
                     Some(self.get(&format!("/author/{id}"), &[]).await?)
@@ -504,7 +574,12 @@ impl Chaptarr {
                 } else {
                     vec![book.clone()]
                 };
-                return Ok((author, Some(book), rows));
+                return Ok(Located {
+                    author,
+                    book: Some(book),
+                    rows,
+                    server_associated,
+                });
             }
             warn!(
                 book_id = id,
@@ -514,11 +589,21 @@ impl Chaptarr {
         }
         let author = self.find_author(item).await?;
         let Some(author_id) = author.as_ref().and_then(|a| positive_id(a.get("id"))) else {
-            return Ok((None, None, Vec::new()));
+            return Ok(Located {
+                author: None,
+                book: None,
+                rows: Vec::new(),
+                server_associated: false,
+            });
         };
         let rows = self.books_for_author(author_id).await?;
         let book = preferred_book(&rows, self.format, &item.book);
-        Ok((author, book, rows))
+        Ok(Located {
+            author,
+            book,
+            rows,
+            server_associated: false,
+        })
     }
 
     async fn poll_target(&self, author_id: i64, selected: &BookShape) -> Result<Option<Value>> {
@@ -862,9 +947,33 @@ impl Chaptarr {
     }
 
     async fn already_requested(&self, item: &ChaptarrItem) -> Result<Option<FormatState>> {
-        let (_, _, rows) = self.locate_existing(item).await?;
-        let state = self.request_state_across(&rows, item).await?;
+        let located = self.locate_existing(item).await?;
+        if located.server_associated
+            && let Some(row) = &located.book
+        {
+            let state = self.request_state_for_row(row).await?;
+            if state != FormatState::Missing {
+                return Ok(Some(state));
+            }
+        }
+        let state = self.request_state_across(&located.rows, item).await?;
         Ok((state != FormatState::Missing).then_some(state))
+    }
+
+    /// The shared already-requested refusal: only a Missing state may
+    /// proceed to any write.
+    fn refuse_unless_missing(&self, state: FormatState, title: &str) -> Result<()> {
+        match state {
+            FormatState::Available => bail!(UserFacingError(format!(
+                "{title} is already available as an {}.",
+                format_name(self.format)
+            ))),
+            FormatState::Processing => bail!(UserFacingError(format!(
+                "{title} is already requested as an {}.",
+                format_name(self.format)
+            ))),
+            FormatState::Missing => Ok(()),
+        }
     }
 
     /// Monitoring is only a durable configuration flag; it does not prove a
@@ -1215,20 +1324,16 @@ impl MediaBackend for Chaptarr {
         // the same work+format cannot both pass this idempotency boundary. The
         // state check spans every matching local row, so an available or
         // in-flight duplicate pocket also stops a second request.
-        let (mut author, mut book, rows) = self.locate_existing(&item).await?;
-        match self.request_state_across(&rows, &item).await? {
-            FormatState::Available => bail!(UserFacingError(format!(
-                "{} is already available as an {}.",
-                item.book.title,
-                format_name(self.format)
-            ))),
-            FormatState::Processing => bail!(UserFacingError(format!(
-                "{} is already requested as an {}.",
-                item.book.title,
-                format_name(self.format)
-            ))),
-            FormatState::Missing => {}
+        let located = self.locate_existing(&item).await?;
+        let mut author = located.author;
+        let mut book = located.book;
+        let mut server_resolved = located.server_associated;
+        if server_resolved && let Some(row) = &book {
+            let state = self.request_state_for_row(row).await?;
+            self.refuse_unless_missing(state, &item.book.title)?;
         }
+        let state = self.request_state_across(&located.rows, &item).await?;
+        self.refuse_unless_missing(state, &item.book.title)?;
 
         let mut author_added = false;
         // The `POST /book` 201 echo is the canonical row the server created
@@ -1239,19 +1344,29 @@ impl MediaBackend for Chaptarr {
         // the echoed id is captured on every add path.
         let mut echoed_book_id = None;
         if author.is_none() {
-            let response = self
+            match self
                 .add_book(&item.book.title, &self.new_author_body(&item))
-                .await?;
-            echoed_book_id = positive_id(response.get("id"));
-            if let Some(author_id) = positive_id(response.get("authorId"))
-                .or_else(|| positive_id(response.pointer("/author/id")))
+                .await?
             {
-                author = Some(self.get(&format!("/author/{author_id}"), &[]).await?);
-            } else {
-                // Some Chaptarr builds acknowledge the add without echoing the
-                // local author ID. Re-resolve the stable external identity
-                // instead of treating a response shape as authoritative.
-                author = self.find_author(&item).await?;
+                AddOutcome::Added(response) => {
+                    echoed_book_id = positive_id(response.get("id"));
+                    if let Some(author_id) = positive_id(response.get("authorId"))
+                        .or_else(|| positive_id(response.pointer("/author/id")))
+                    {
+                        author = Some(self.get(&format!("/author/{author_id}"), &[]).await?);
+                    } else {
+                        // Some Chaptarr builds acknowledge the add without
+                        // echoing the local author ID. Re-resolve the stable
+                        // external identity instead of treating a response
+                        // shape as authoritative.
+                        author = self.find_author(&item).await?;
+                    }
+                }
+                AddOutcome::UnresolvedConflict => {
+                    // The conflicted add still imported the catalog; pick the
+                    // author back up and resolve the rows by identity.
+                    author = self.find_author(&item).await?;
+                }
             }
             author_added = true;
         }
@@ -1267,41 +1382,34 @@ impl MediaBackend for Chaptarr {
         self.wait_for_catalog_settle(author_id, &item.book.author.author_name)
             .await?;
         if !author_added {
-            let (refreshed_author, refreshed_book, refreshed_rows) =
-                self.locate_existing(&item).await?;
-            if let Some(refreshed_author) = refreshed_author {
+            let refreshed = self.locate_existing(&item).await?;
+            if let Some(refreshed_author) = refreshed.author {
                 author_id = positive_id(refreshed_author.get("id"))
                     .context("Chaptarr could not re-resolve the requested author")?;
                 author = Some(refreshed_author);
             }
-            book = refreshed_book;
-            match self.request_state_across(&refreshed_rows, &item).await? {
-                FormatState::Available => bail!(UserFacingError(format!(
-                    "{} is already available as an {}.",
-                    item.book.title,
-                    format_name(self.format)
-                ))),
-                FormatState::Processing => bail!(UserFacingError(format!(
-                    "{} is already requested as an {}.",
-                    item.book.title,
-                    format_name(self.format)
-                ))),
-                FormatState::Missing => {}
+            book = refreshed.book;
+            server_resolved = refreshed.server_associated;
+            if server_resolved && let Some(row) = &book {
+                let state = self.request_state_for_row(row).await?;
+                self.refuse_unless_missing(state, &item.book.title)?;
             }
+            let state = self.request_state_across(&refreshed.rows, &item).await?;
+            self.refuse_unless_missing(state, &item.book.title)?;
             if book.is_none() {
                 let local_author = author
                     .as_ref()
                     .context("Chaptarr could not resolve the requested author")?;
                 let body = self.existing_author_book_body(&item, local_author)?;
-                let response = self.add_book(&item.book.title, &body).await?;
-                echoed_book_id = positive_id(response.get("id"));
+                if let AddOutcome::Added(response) = self.add_book(&item.book.title, &body).await? {
+                    echoed_book_id = positive_id(response.get("id"));
+                }
                 // Adding one work can queue metadata commands of its own;
                 // wait until they are quiet before monitoring anything.
                 self.wait_for_catalog_settle(author_id, &item.book.author.author_name)
                     .await?;
             }
         }
-        let mut server_resolved = false;
         if book.is_none()
             && let Some(echoed_id) = echoed_book_id
         {
@@ -1321,19 +1429,8 @@ impl MediaBackend for Chaptarr {
                     // so an id-drifted re-request lands here with the
                     // original row: apply the same already-requested gate as
                     // the pre-add check.
-                    match self.request_state_for_row(&row).await? {
-                        FormatState::Available => bail!(UserFacingError(format!(
-                            "{} is already available as an {}.",
-                            item.book.title,
-                            format_name(self.format)
-                        ))),
-                        FormatState::Processing => bail!(UserFacingError(format!(
-                            "{} is already requested as an {}.",
-                            item.book.title,
-                            format_name(self.format)
-                        ))),
-                        FormatState::Missing => {}
-                    }
+                    let state = self.request_state_for_row(&row).await?;
+                    self.refuse_unless_missing(state, &item.book.title)?;
                     book = Some(row);
                     server_resolved = true;
                 }
@@ -2958,6 +3055,217 @@ mod tests {
         assert!(recorded[15].contains("\"anyEditionOk\":false"));
         assert!(recorded[15].contains("\"manualAdd\":true"));
         assert_eq!(recorded[15].matches("\"monitored\":true").count(), 1);
+    }
+
+    #[tokio::test]
+    async fn a_drift_normalized_lookup_association_short_circuits_by_server_authority() {
+        // Live 0.9.936: once a work has local rows, its lookup row carries
+        // the server's own local-book association - pointing at a row whose
+        // canonical work id drifted from the lookup's, so no identity tier
+        // can confirm it. The association is server authority (like the add
+        // echo) and must short-circuit an available work instead of being
+        // discarded and re-added.
+        let drifted_row = json!({
+            "id": 981,
+            "authorId": 7001,
+            "title": "The Clockwork Orchard",
+            "foreignBookId": "gr:canonical-9001",
+            "goodreadsWorkId": "gr:canonical-9001",
+            "mediaType": "ebook",
+            "monitored": true,
+            "ebookMonitored": true,
+            "hasFiles": true
+        });
+        let author = json!({
+            "id": 7001,
+            "authorName": "Mara Vale",
+            "foreignAuthorId": "hc:author-1001",
+            "monitored": true,
+            "ebookMonitorFuture": true,
+            "audiobookMonitorFuture": false
+        });
+        let responses = vec![
+            drifted_row.to_string(),
+            author.to_string(),
+            json!([drifted_row]).to_string(),
+        ];
+        let (base_url, requests, server) = mock_api(responses).await;
+        let mut chaptarr = backend(ChaptarrFormat::Ebook);
+        chaptarr.base_url = base_url;
+        chaptarr.client = reqwest::Client::builder()
+            .timeout(Duration::from_secs(2))
+            .build()
+            .unwrap();
+        let mut item = lookup_item();
+        item.existing_book_id = Some(981);
+
+        let error = chaptarr
+            .request(Vec::new(), Box::new(item), 1234)
+            .await
+            .unwrap_err();
+        assert!(
+            error
+                .downcast_ref::<UserFacingError>()
+                .is_some_and(|user| user.0.contains("already available")),
+            "expected an already-available refusal, got: {error:#}"
+        );
+        timeout(Duration::from_secs(2), server)
+            .await
+            .expect("mock server should finish")
+            .unwrap();
+        let recorded = requests.lock().await;
+        let lines: Vec<_> = recorded
+            .iter()
+            .map(|request| request_line(request))
+            .collect();
+        assert_eq!(
+            lines,
+            vec![
+                "GET /api/v1/book/981 HTTP/1.1",
+                "GET /api/v1/author/7001 HTTP/1.1",
+                "GET /api/v1/book?authorId=7001 HTTP/1.1",
+            ]
+        );
+    }
+
+    #[tokio::test]
+    async fn a_conflicted_add_recovers_by_identity_against_the_imported_rows() {
+        // Live 0.9.936: an add can 500 with "resolves to multiple local
+        // ... books" AFTER importing the author's catalog. The rows exist by
+        // then, so the request must continue and resolve them through the
+        // identity chain instead of surfacing an error (the live retry that
+        // proved this resolved to the exact-id row with one search).
+        let author = json!({
+            "id": 7001,
+            "authorName": "Mara Vale",
+            "foreignAuthorId": "hc:author-1001",
+            "monitored": true,
+            "ebookMonitorFuture": false,
+            "audiobookMonitorFuture": false
+        });
+        let author_monitored = json!({
+            "id": 7001,
+            "authorName": "Mara Vale",
+            "foreignAuthorId": "hc:author-1001",
+            "monitored": true,
+            "ebookMonitorFuture": true,
+            "audiobookMonitorFuture": false
+        });
+        let imported_book = json!({
+            "id": 4101,
+            "authorId": 7001,
+            "title": "The Clockwork Orchard",
+            "foreignBookId": "gr:work-1001",
+            "mediaType": "ebook",
+            "monitored": false,
+            "ebookMonitored": false,
+            "hasFiles": false
+        });
+        let monitored_book = json!({
+            "id": 4101,
+            "authorId": 7001,
+            "title": "The Clockwork Orchard",
+            "foreignBookId": "gr:work-1001",
+            "mediaType": "ebook",
+            "monitored": true,
+            "ebookMonitored": true,
+            "hasFiles": false
+        });
+        let ebook_edition = json!({
+            "id": 8101,
+            "bookId": 4101,
+            "title": "The Clockwork Orchard",
+            "foreignEditionId": "hc:edition-1001",
+            "format": "Kindle Edition", "readingFormatId": 3,
+            "isEbook": true,
+            "monitored": false,
+            "manualAdd": false
+        });
+        let monitored_ebook_edition = json!({
+            "id": 8101,
+            "bookId": 4101,
+            "title": "The Clockwork Orchard",
+            "foreignEditionId": "hc:edition-1001",
+            "format": "Kindle Edition", "readingFormatId": 3,
+            "isEbook": true,
+            "monitored": true,
+            "manualAdd": true
+        });
+        let responses = vec![
+            (200, json!([author.clone()]).to_string()),
+            (200, "[]".to_string()),
+            (200, author.to_string()),
+            (200, "[]".to_string()),
+            (200, json!([author.clone()]).to_string()),
+            (200, "[]".to_string()),
+            (
+                500,
+                json!({"message": "Requested work gr:work-1001 resolves to multiple local Ebook books."})
+                    .to_string(),
+            ),
+            (200, author.to_string()),
+            (200, "[]".to_string()),
+            (200, json!([imported_book.clone()]).to_string()),
+            (200, json!([imported_book]).to_string()),
+            (200, json!([ebook_edition]).to_string()),
+            (200, author.to_string()),
+            (200, "{}".to_string()),
+            (200, author_monitored.to_string()),
+            (200, "{}".to_string()),
+            (200, "{}".to_string()),
+            (200, monitored_book.to_string()),
+            (200, json!([monitored_ebook_edition]).to_string()),
+            (200, COMMAND_RESPONSE.to_string()),
+        ];
+        let (base_url, requests, server) = mock_api_with_statuses(responses).await;
+        let mut chaptarr = backend(ChaptarrFormat::Ebook);
+        chaptarr.base_url = base_url;
+        chaptarr.client = reqwest::Client::builder()
+            .timeout(Duration::from_secs(2))
+            .build()
+            .unwrap();
+        let mut item = lookup_item();
+        item.existing_book_id = None;
+
+        chaptarr
+            .request(Vec::new(), Box::new(item), 1234)
+            .await
+            .unwrap();
+        timeout(Duration::from_secs(2), server)
+            .await
+            .expect("mock server should finish")
+            .unwrap();
+
+        let recorded = requests.lock().await;
+        let lines: Vec<_> = recorded
+            .iter()
+            .map(|request| request_line(request))
+            .collect();
+        assert_eq!(
+            lines,
+            vec![
+                "GET /api/v1/author HTTP/1.1",
+                "GET /api/v1/book?authorId=7001 HTTP/1.1",
+                "GET /api/v1/author/7001 HTTP/1.1",
+                "GET /api/v1/command HTTP/1.1",
+                "GET /api/v1/author HTTP/1.1",
+                "GET /api/v1/book?authorId=7001 HTTP/1.1",
+                "POST /api/v1/book HTTP/1.1",
+                "GET /api/v1/author/7001 HTTP/1.1",
+                "GET /api/v1/command HTTP/1.1",
+                "GET /api/v1/book?authorId=7001 HTTP/1.1",
+                "GET /api/v1/book?authorId=7001 HTTP/1.1",
+                "GET /api/v1/edition?bookId=4101 HTTP/1.1",
+                "GET /api/v1/author/7001 HTTP/1.1",
+                "PUT /api/v1/author/7001 HTTP/1.1",
+                "GET /api/v1/author/7001 HTTP/1.1",
+                "PUT /api/v1/book/4101 HTTP/1.1",
+                "PUT /api/v1/book/monitor HTTP/1.1",
+                "GET /api/v1/book/4101 HTTP/1.1",
+                "GET /api/v1/edition?bookId=4101 HTTP/1.1",
+                "POST /api/v1/command HTTP/1.1",
+            ]
+        );
     }
 
     #[tokio::test]
