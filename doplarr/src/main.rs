@@ -1,5 +1,6 @@
 use clap::Parser;
 use discord::InteractionContinue;
+use doplarr::{args, config, discord, providers, startup};
 use providers::UserFacingError;
 use std::{collections::HashMap, sync::Arc, time::Instant};
 use tokio::{
@@ -14,12 +15,6 @@ use twilight_http::Client as HttpClient;
 use twilight_model::application::interaction::{
     InteractionData, application_command::CommandOptionValue,
 };
-
-pub mod args;
-pub mod config;
-pub mod discord;
-pub mod providers;
-pub mod startup;
 
 /// Sanitize error messages for Discord users while keeping full details in logs
 fn user_facing_error(err: &anyhow::Error) -> String {
