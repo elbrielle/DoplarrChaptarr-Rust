@@ -8,6 +8,15 @@ repository.workspace = true
 rust-version.workspace = true
 description = "Discord media requests with Chaptarr ebook and audiobook support"
 
+[features]
+# Dev-only: gates the chaptarr_canary driver out of the release binary set.
+canary = []
+
+[[bin]]
+name = "chaptarr_canary"
+path = "src/bin/chaptarr_canary.rs"
+required-features = ["canary"]
+
 [dependencies]
 anyhow = "1"
 reqwest = { version = "0.13", default-features = false, features = ["rustls"] }

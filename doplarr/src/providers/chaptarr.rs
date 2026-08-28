@@ -214,6 +214,9 @@ impl Chaptarr {
         endpoint: &str,
         query: &[(&str, String)],
     ) -> Result<T> {
+        // Request lines log endpoint only: the API key travels in the header
+        // and query values can carry search text.
+        debug!(endpoint, "Chaptarr GET");
         let response = self
             .client
             .get(format!("{}{}", self.base_url, endpoint))
@@ -226,6 +229,7 @@ impl Chaptarr {
     }
 
     async fn send_json(&self, method: Method, endpoint: &str, body: &Value) -> Result<Value> {
+        debug!(%method, endpoint, "Chaptarr write");
         let bytes = serde_json::to_vec(body)?;
         let response = self
             .client
@@ -247,6 +251,7 @@ impl Chaptarr {
     /// meaning is specific to this route (`PUT /book/monitor` also answers
     /// 202, as ordinary success), so only the add path interprets it.
     async fn add_book(&self, title: &str, body: &Value) -> Result<Value> {
+        debug!(endpoint = "/book", "Chaptarr write");
         let bytes = serde_json::to_vec(body)?;
         let response = self
             .client
