@@ -187,24 +187,35 @@ declarations:
   and its enum is a different one with `General = 0, Audiobook = 1, Ebook = 2`
   (`src/NzbDrone.Core/Profiles/Metadata/MetadataProfile.cs:6-11`).
 
-Fresh-install seeding is asymmetric too. First boot seeds one quality
-profile per format — `eBook` (type Ebook, cutoff MOBI) and `Spoken` (type
-Audiobook, cutoff M4B) (`QualityProfileService.cs:118-163`) — but both
-seeded metadata profiles, `Standard` and `None`, are **type General (0)**:
-the seeder never sets `ProfileType` (`MetadataProfileService.cs:647-701`)
-and the model defaults it (`MetadataProfile.cs:6-33`). The server accepts a
-General metadata profile wherever a typed one is wanted — `GET
-/metadataprofile?mediaType=` filters to `General || requested`
-(`MetadataProfileController.cs:131-142`). `None` is a filter-everything
-sentinel (`MinPopularity 1e10`, `MetadataProfileService.cs:32-33`);
-selecting it implicitly would break every import.
+Seeding happens in two layers, and only the live canary revealed which one
+a fresh install actually sees. A fresh DB is seeded by **migration 001**
+with typed profiles: quality `E-Book` (type Ebook) and `Audiobook` (type
+Audiobook) (`001_chaptarr_complete_schema.cs:1294-1333`) and metadata
+`Audiobook Default` (type 1) and `Ebook Default` (type 2) (`:1336-1373`).
+The event-handler seeders only fill **empty** profile tables
+(`QualityProfileService.cs:118-163` skips when `profiles.Any()`;
+`MetadataProfileService.cs:647-701`), so their `eBook`/`Spoken` and
+`Standard` defaults never appear on a fresh install — verified live on the
+`chaptarr/chaptarr:0.9.936` container (2026-08-27 canary). The metadata
+handler still appends the `None` sentinel (`MinPopularity 1e10`,
+`MetadataProfileService.cs:32-33`); selecting it implicitly would break
+every import.
+
+The **General-only metadata state** (`Standard` + `None`, both type 0 —
+the handler seeder never sets `ProfileType`, and the model defaults it,
+`MetadataProfile.cs:6-33`) is therefore not the fresh-install shape; it is
+the legacy shape of upgraded or imported databases whose profile rows
+predate the typed schema. The server accepts a General metadata profile
+wherever a typed one is wanted — `GET /metadataprofile?mediaType=` filters
+to `General || requested` (`MetadataProfileController.cs:131-142`).
 
 Metadata-profile resolution therefore runs in tiers: an explicitly
 configured name always wins, even `None` (the admin said so); otherwise
-exactly one format-typed profile (Audiobook=1/Ebook=2); otherwise exactly
-one General profile excluding any named `None`. Anything else fails closed
-listing the available names. Quality-profile resolution stays typed-only:
-fresh installs seed exactly one per type.
+exactly one format-typed profile (Audiobook=1/Ebook=2) — the fresh-install
+path; otherwise exactly one General profile excluding any named `None` —
+the legacy-database path. Anything else fails closed listing the available
+names. Quality-profile resolution stays typed-only: both seeding layers
+provide exactly one per type.
 
 A missing quality profile for the requested media type independently
 empties that format's searches server-side

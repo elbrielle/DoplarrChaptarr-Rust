@@ -85,14 +85,16 @@ fn resolve_quality_profile(
     )
 }
 
-/// A fresh install seeds `Standard` and `None`, both type General (0) — the
-/// seeder never sets `ProfileType` (`MetadataProfileService.cs:647-701`) and
-/// the model defaults it (`MetadataProfile.cs:6-33`) — while the server
-/// accepts a General profile wherever a typed one is wanted
-/// (`MetadataProfileController.cs:131-142`). So a typed profile (1/2) is
-/// preferred but General profiles other than the `None` sentinel are a valid
-/// fallback; requiring a typed match would fail configuration validation on
-/// every default instance.
+/// Fresh installs get typed metadata profiles from migration 001
+/// (`001_chaptarr_complete_schema.cs:1336-1373`, verified live on the
+/// 0.9.936 container), but legacy or imported databases hold only
+/// General (0) rows: the event-handler seeder never sets `ProfileType`
+/// (`MetadataProfileService.cs:647-701`) and the model defaults it
+/// (`MetadataProfile.cs:6-33`). The server accepts a General profile
+/// wherever a typed one is wanted (`MetadataProfileController.cs:131-142`),
+/// so a typed profile (1/2) is preferred and General profiles other than
+/// the `None` sentinel are the legacy fallback; requiring a typed match
+/// would fail configuration validation on those instances.
 fn resolve_metadata_profile(
     profiles: &[Profile],
     format: ChaptarrFormat,
@@ -908,8 +910,8 @@ mod tests {
     const SPARSE: &str = include_str!("../../../tests/fixtures/chaptarr/book_sparse.json");
     const QUALITY: &str = include_str!("../../../tests/fixtures/chaptarr/quality_profiles.json");
     const METADATA: &str = include_str!("../../../tests/fixtures/chaptarr/metadata_profiles.json");
-    const METADATA_FRESH: &str =
-        include_str!("../../../tests/fixtures/chaptarr/metadata_profiles_fresh.json");
+    const METADATA_GENERAL_ONLY: &str =
+        include_str!("../../../tests/fixtures/chaptarr/metadata_profiles_general_only.json");
     const ROOTS: &str = include_str!("../../../tests/fixtures/chaptarr/root_folders.json");
     const LIVE_ROOTS: &str =
         include_str!("../../../tests/fixtures/chaptarr/root_folders_nested.json");
@@ -1018,14 +1020,16 @@ mod tests {
     }
 
     #[test]
-    fn fresh_install_metadata_seed_resolves_to_standard_for_both_formats() {
-        // A default instance has exactly `Standard` + `None`, both type
-        // General (0) — the seeder never sets ProfileType
-        // (MetadataProfileService.cs:647-701, MetadataProfile.cs:6-33) — so
-        // requiring a typed metadata profile fails startup on every fresh
-        // install. General is accepted wherever a typed profile is wanted
-        // (MetadataProfileController.cs:131-142).
-        let metadata: Vec<Profile> = serde_json::from_str(METADATA_FRESH).unwrap();
+    fn general_only_metadata_profiles_resolve_to_standard_for_both_formats() {
+        // The General-only state (`Standard` + `None`, both type 0) is the
+        // legacy/imported-database shape: the event-handler seeder never
+        // sets ProfileType (MetadataProfileService.cs:647-701,
+        // MetadataProfile.cs:6-33). Fresh installs get typed profiles from
+        // migration 001 instead (001_chaptarr_complete_schema.cs:1336-1373,
+        // verified live). General is accepted wherever a typed profile is
+        // wanted (MetadataProfileController.cs:131-142), so this state must
+        // resolve, not fail startup.
+        let metadata: Vec<Profile> = serde_json::from_str(METADATA_GENERAL_ONLY).unwrap();
         assert_eq!(
             resolve_profile(&metadata, ChaptarrFormat::Ebook, true, None).unwrap(),
             1
@@ -1064,7 +1068,7 @@ mod tests {
 
     #[test]
     fn explicitly_configured_metadata_name_wins_even_for_the_none_sentinel() {
-        let metadata: Vec<Profile> = serde_json::from_str(METADATA_FRESH).unwrap();
+        let metadata: Vec<Profile> = serde_json::from_str(METADATA_GENERAL_ONLY).unwrap();
         assert_eq!(
             resolve_profile(&metadata, ChaptarrFormat::Ebook, true, Some("None")).unwrap(),
             2
