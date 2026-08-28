@@ -825,13 +825,23 @@ async fn run_concurrent(
         "one request completed, the concurrent duplicate was refused as already requested",
     );
 
-    // Same-process retry immediately after a valid acknowledgement: the
-    // confirmation screen must already refuse it (ack cache dedup).
-    let (retry_items, retry_selection) = search_and_pick(backend, title, select).await?;
-    let retry = backend
+    // Same-process retry immediately after a valid acknowledgement: the ack
+    // cache must refuse it before any second search. The confirmation-stage
+    // short-circuit is best effort (a drift-normalized work may have no
+    // association or identity match yet), so the authoritative refusal may
+    // come from request() itself - the checklist bullet is that no second
+    // search gets queued.
+    let (mut retry_items, retry_selection) = search_and_pick(backend, title, select).await?;
+    let retried = match backend
         .additional_details(&*retry_items[retry_selection.index])
-        .await;
-    let retried = outcome_from(retry.map(|_| ()));
+        .await
+    {
+        Ok(details) => {
+            let item = retry_items.swap_remove(retry_selection.index);
+            outcome_from(backend.request(details, item, 3333).await)
+        }
+        Err(error) => outcome_from(Err(error)),
+    };
     println!("same-process retry: {}", retried.describe());
     report.check(
         matches!(&retried, Outcome::Refusal(message) if message.contains("already requested")),
