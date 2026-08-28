@@ -52,6 +52,12 @@ twelve checklist cases against a live `chaptarr/chaptarr:0.9.936` container.
   in the canary record).
 - The Chaptarr HTTP helpers emit endpoint-only debug request lines, so a
   canary transcript carries every request with no key or search text.
+- Every edition posted in an add body carries explicit empty `images` and
+  `links` arrays: the server maps both with no null coalesce onto NOT NULL
+  columns, so a well-formed edition that omitted them was the live 409
+  "SQLite Error 19: NOT NULL constraint failed: Editions.Images" that made
+  cross-format adds of id-drifted works unusable. The empties mirror the
+  columns' own defaults.
 
 ### Changed - Simplification & identity (Sprint 2)
 

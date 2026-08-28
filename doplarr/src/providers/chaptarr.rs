@@ -871,6 +871,15 @@ impl Chaptarr {
             ChaptarrFormat::Ebook => 3,
             ChaptarrFormat::Audiobook => 2,
         };
+        // Every posted edition carries explicit empty `images`/`links`:
+        // `EditionResource.ToModel` maps both with no null coalesce
+        // (`EditionResource.cs:188-189`) and the columns are NOT NULL, so an
+        // edition that omits them and still survives the server's
+        // wholesale-replace (title + readingFormatId present,
+        // `AddBookService.cs:137`, predicate `:940-949`) reaches the insert
+        // as SQL NULL — the live 409 "SQLite Error 19: NOT NULL constraint
+        // failed: Editions.Images". The empties mirror the columns' own
+        // "[]" defaults.
         let selected_editions: Vec<Value> = item
             .book
             .editions
@@ -884,6 +893,8 @@ impl Chaptarr {
                     "readingFormatId": expected_reading_format,
                     "isEbook": expected_ebook,
                     "isbn13": edition.isbn13,
+                    "images": [],
+                    "links": [],
                     "monitored": false,
                     "manualAdd": false
                 })
@@ -901,6 +912,8 @@ impl Chaptarr {
                 "format": format_name(self.format),
                 "readingFormatId": expected_reading_format,
                 "isEbook": expected_ebook,
+                "images": [],
+                "links": [],
                 "monitored": false,
                 "manualAdd": false
             })]
@@ -3052,6 +3065,12 @@ mod tests {
         assert!(recorded[6].contains("\"ebookMonitored\":false"));
         assert!(recorded[6].contains("\"audiobookMonitored\":false"));
         assert!(!recorded[6].contains("remoteCover"));
+        // Posted editions must carry explicit empty images/links: the server
+        // maps both with no null coalesce (EditionResource.cs:188-189) onto
+        // NOT NULL columns, and a well-formed edition that omits them is the
+        // live 409 "NOT NULL constraint failed: Editions.Images".
+        assert!(recorded[6].contains("\"images\":[]"));
+        assert!(recorded[6].contains("\"links\":[]"));
         assert!(recorded[15].contains("\"anyEditionOk\":false"));
         assert!(recorded[15].contains("\"manualAdd\":true"));
         assert_eq!(recorded[15].matches("\"monitored\":true").count(), 1);
