@@ -8,14 +8,18 @@
 
 # DoplarrChaptarr (Rust)
 
-A Discord bot for requesting movies, television, ebooks, and audiobooks through
-\*arr-style backends, written in Rust. This is the Rust successor to the original
-Clojure DoplarrChaptarr fork and is based on the rewritten Rust Doplarr.
+A Discord bot for requesting movies, television, ebooks, audiobooks, and
+sports leagues through \*arr-style backends, written in Rust. This is the Rust
+successor to the original Clojure DoplarrChaptarr fork and is based on the
+rewritten Rust Doplarr (kept in sync with upstream; the Sportarr backend
+comes from there).
 
 The original Clojure implementation remains available in
 [`elbrielle/DoplarrChaptarr`](https://github.com/elbrielle/DoplarrChaptarr).
-This repository is the maintained successor. Source may be published before a
-binary beta; releases remain gated by the disposable Chaptarr checklist below.
+This repository is the maintained successor. The Chaptarr write path is
+beta, backed by a full disposable-instance mutation canary
+([evidence record](docs/chaptarr/canary/2026-08-28-0.9.936.md)); releases
+remain gated by the checklist below and an explicit sign-off.
 
 Each backend creates a `/request <media>` slash command. Chaptarr adds the same
 two public commands as the old fork: `/request book` and `/request audiobook`.
@@ -239,13 +243,15 @@ API. Results are cached and globally rate-limited. Set it to `false` on both
 backends if you do not want search text sent to that service.
 
 > [!WARNING]
-> Chaptarr's source and a stable public API specification are not currently
-> available. The initial integration contract is tested against captured,
-> sanitized Chaptarr `0.9.720.0` API responses, but an update can still change
-> the private API. Pin known
-> working DoplarrChaptarr and Chaptarr versions, read release notes before
-> upgrading, and report the DoplarrChaptarr version, Chaptarr version, endpoint,
-> and sanitized response shape when filing a compatibility issue.
+> Chaptarr's API is private and pre-1.0. The integration contract is derived
+> from the Chaptarr source at `v0.9.936` with line citations, guarded by
+> contract tests, and proven live against a disposable `0.9.936` instance
+> ([canary record](docs/chaptarr/canary/2026-08-28-0.9.936.md)) — but a new
+> Chaptarr release can still change the API. Pin known working versions,
+> triage a new Chaptarr tag with `scripts/check-chaptarr-release.sh <tag>`
+> before upgrading, and report the DoplarrChaptarr version, Chaptarr
+> version, endpoint, and sanitized response shape when filing a
+> compatibility issue.
 
 The endpoints, response fields, search rules, cover fallbacks, and safe write
 sequence are documented in

@@ -164,10 +164,11 @@ a coverless search sends its search text to Open Library's public API; results
 are cached and rate-limited.
 
 > [!WARNING]
-> Chaptarr's source and a stable public API specification are not currently
-> available. The initial contract targets captured, sanitized Chaptarr
-> `0.9.720.0` responses. Pin both applications to versions you have tested
-> together. Read release notes and test search plus one request before promoting
+> Chaptarr's API is private and pre-1.0. The contract is derived from the
+> Chaptarr source at `v0.9.936` and proven live against a disposable
+> instance (`docs/chaptarr/canary/2026-08-28-0.9.936.md`). Pin both
+> applications to versions you have tested together, and triage a new
+> Chaptarr tag with `scripts/check-chaptarr-release.sh` before promoting
 > upgrades to other users.
 
 ## New options

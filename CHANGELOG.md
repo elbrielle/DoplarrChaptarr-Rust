@@ -2,7 +2,7 @@
 
 All notable changes to DoplarrChaptarr Rust are documented here.
 
-## 4.6.1-chaptarr.1 - Unreleased
+## 4.6.1-chaptarr.1 - 2026-08-28
 
 Fixes the new-author request failure observed live on 2026-07-15. The old bot
 accepted a Farseer collection row while Robin Hobb's catalog was still
@@ -10,6 +10,48 @@ refreshing, monitored and searched that bundle too early, and still reported
 success when that `BookSearch` completed with zero results. It had not selected
 a usable ebook edition, and the import tail later removed the partial monitor
 state.
+
+The write path is beta, backed by the full disposable-instance mutation
+canary of 2026-08-28 (`docs/chaptarr/canary/2026-08-28-0.9.936.md`): all
+twelve checklist cases against a live `chaptarr/chaptarr:0.9.936` container.
+
+### Changed - The native hook (Sprint 3)
+
+- Startup metadata-profile resolution accepts the seeded General fallback:
+  an explicitly configured name always wins (even `None` — the admin said
+  so), then exactly one format-typed profile, then exactly one General
+  profile excluding the `None` sentinel. Fresh installs resolve through the
+  typed tier (migration 001 pre-seeds typed profiles — a canary correction
+  to the source-read premise); legacy/imported databases whose profiles are
+  all General now start instead of failing validation.
+- The live canary showed work-id normalization is id-space-wide (a lookup's
+  work id can vanish entirely at import, sidecars included), so
+  server-asserted row links now stand beside the identity chain as
+  authority: the `POST /book` 201 echo (the canonical row the add created
+  or deduped to) resolves added works, and a lookup row's local-book
+  association resolves already-local ones — format-checked, gated by a
+  per-row already-requested check, and read-back verified by id. The chain
+  still governs every row the server has not vouched for.
+- A `POST /book` that fails after importing the catalog ("resolves to
+  multiple local ... books", a live 500) is recovered in-request by
+  resolving the just-imported rows through the identity chain; a 409 whose
+  body is a bare error resource surfaces its message instead of an empty
+  "identity is ambiguous ()".
+- A headless canary driver (`cargo run -p doplarr --features canary --bin
+  chaptarr_canary`) drives every RELEASE_CHECKLIST mutation case without
+  Discord through the production startup path, with snapshot-based
+  verification of every checklist bullet; `scripts/canary/` provisions the
+  disposable instance. The `canary` feature keeps the driver out of the
+  release binary set.
+- `scripts/check-chaptarr-release.sh <tag>` triages a new Chaptarr release
+  in minutes: route-inventory drift report plus the contract test against
+  the fresh extract.
+- Merged upstream doplarr_rs @ `9533084`: the Sportarr backend (`/request
+  sport`) is carried, and Radarr gained upstream's already-requested status
+  reporting. Chaptarr provider behavior is untouched (post-merge live smoke
+  in the canary record).
+- The Chaptarr HTTP helpers emit endpoint-only debug request lines, so a
+  canary transcript carries every request with no key or search text.
 
 ### Changed - Simplification & identity (Sprint 2)
 
