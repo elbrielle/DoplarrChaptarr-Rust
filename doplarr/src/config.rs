@@ -91,6 +91,13 @@ pub enum BackendConfig {
         /// Enrich missing cover art through Open Library. Defaults to true.
         openlibrary_covers: Option<bool>,
     },
+    Sportarr {
+        url: String,
+        api_key: String,
+        /// Pin every request to this quality profile by name; when absent, the
+        /// requester picks from a dropdown
+        quality_profile: Option<String>,
+    },
 }
 
 /// Starter config written when no config file exists and no migration
@@ -159,6 +166,14 @@ discord_token = "your_discord_bot_token"
 # ebook_metadata_profile = "Ebook Default"
 # audiobook_metadata_profile = "Audiobook Default"
 # openlibrary_covers = true
+
+# --- Sportarr ---
+# [[backends]]
+# media = "sport"
+#
+# [backends.config.Sportarr]
+# url = "http://localhost:1867"
+# api_key = "${SPORTARR_API_KEY}"
 "#;
 
 /// Expand `${VAR}` references against the process environment. Expansion

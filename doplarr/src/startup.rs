@@ -6,7 +6,7 @@ use crate::{
     config::{Backend, BackendConfig, Config},
     providers::{
         MediaBackend, chaptarr::Chaptarr, radarr::Radarr, seerr::Seerr as SeerrBackend,
-        sonarr::Sonarr,
+        sonarr::Sonarr, sportarr::Sportarr,
     },
 };
 use anyhow::{Result, bail};
@@ -107,6 +107,12 @@ pub async fn connect_backends(config: &Config) -> Result<ConnectedBackends> {
             BackendConfig::Seerr { .. } => (
                 Arc::new(SeerrBackend::connect(config.clone(), backend_http.clone()).await?),
                 "Seerr",
+                None,
+                None,
+            ),
+            BackendConfig::Sportarr { .. } => (
+                Arc::new(Sportarr::connect(config.clone(), backend_http.clone()).await?),
+                "Sportarr",
                 None,
                 None,
             ),
