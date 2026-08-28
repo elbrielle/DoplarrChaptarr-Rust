@@ -380,17 +380,28 @@ fn command_name(command: &Value) -> String {
     }
 }
 
-fn command_references_book(command: &Value, book_id: i64) -> bool {
-    [command.get("body"), Some(command)]
-        .into_iter()
-        .flatten()
-        .any(|scope| {
-            scope.get("bookId").and_then(Value::as_i64) == Some(book_id)
-                || scope
-                    .get("bookIds")
-                    .and_then(Value::as_array)
-                    .is_some_and(|ids| ids.iter().any(|id| id.as_i64() == Some(book_id)))
-        })
+fn referenced_book_ids(command: &Value) -> Vec<i64> {
+    let mut ids = Vec::new();
+    for scope in [command.get("body"), Some(command)].into_iter().flatten() {
+        if let Some(id) = scope
+            .get("bookId")
+            .and_then(Value::as_i64)
+            .filter(|id| *id > 0)
+        {
+            ids.push(id);
+        }
+        for id in scope
+            .get("bookIds")
+            .and_then(Value::as_array)
+            .into_iter()
+            .flatten()
+        {
+            if let Some(id) = id.as_i64().filter(|id| *id > 0) {
+                ids.push(id);
+            }
+        }
+    }
+    ids
 }
 
 /// A per-case report: everything the evidence record needs, with an explicit
@@ -578,21 +589,41 @@ async fn verify_request(
         "author addOptions is spent (settle latch observed)",
     );
 
-    // Book rows: the target row, and no sibling monitor changes.
-    let rows = api.get(&format!("/book?authorId={author_id}")).await?;
-    let wanted_title = normalize(&selection.title);
-    let mut target: Option<&Value> = None;
-    let mut sibling_changes = Vec::new();
-    for row in rows.as_array().into_iter().flatten() {
+    // Commands first: the new BookSearch names the target row. The
+    // canonical row's title can legitimately differ from the lookup's
+    // (drift normalization plus edition-driven retitling, both observed
+    // live), so the search command, not a title match, selects the target.
+    let commands = api.get("/command").await?;
+    let new_commands: Vec<&Value> = commands
+        .as_array()
+        .into_iter()
+        .flatten()
+        .filter(|command| field_id(command).is_some_and(|id| !before.command_ids.contains(&id)))
+        .collect();
+    let new_names: Vec<String> = new_commands.iter().map(|c| command_name(c)).collect();
+    report.note(&format!("new commands since snapshot: {new_names:?}"));
+    let manual_refresh = new_commands.iter().any(|command| {
+        command_name(command).eq_ignore_ascii_case("RefreshAuthor")
+            && field_str(command, "trigger").eq_ignore_ascii_case("manual")
+    });
+    report.check(
+        !manual_refresh,
+        "no manually-triggered RefreshAuthor was queued",
+    );
+    let new_searches: Vec<&Value> = new_commands
+        .iter()
+        .copied()
+        .filter(|command| command_name(command).eq_ignore_ascii_case("BookSearch"))
+        .collect();
+
+    // Monitor drift across the author's rows.
+    let rows_value = api.get(&format!("/book?authorId={author_id}")).await?;
+    let rows: Vec<&Value> = rows_value.as_array().into_iter().flatten().collect();
+    let mut changed: Vec<i64> = Vec::new();
+    for row in &rows {
         let Some(book_id) = field_id(row) else {
             continue;
         };
-        let is_target = normalize(&field_str(row, "title")) == wanted_title
-            && field_str(row, "mediaType").eq_ignore_ascii_case(format.media_type());
-        if is_target && target.is_none() {
-            target = Some(row);
-            continue;
-        }
         let now = (
             field_bool(row, "monitored"),
             field_bool(row, "ebookMonitored"),
@@ -604,95 +635,94 @@ async fn verify_request(
             .copied()
             .unwrap_or((false, false, false));
         if now != prior {
-            sibling_changes.push(format!("book {book_id} {prior:?} -> {now:?}"));
+            changed.push(book_id);
         }
     }
-    report.check(
-        sibling_changes.is_empty(),
-        &format!("no sibling work's monitoring changed {sibling_changes:?}"),
-    );
 
-    let Some(target) = target else {
+    if expected_new_searches == 0 {
         report.check(
-            expected_new_searches == 0,
-            "target row is absent (acceptable only for a refused request)",
+            changed.is_empty(),
+            &format!("no row's monitoring changed (changed: {changed:?})"),
         );
+        report.check(new_searches.is_empty(), "no new BookSearch was queued");
+        return Ok(());
+    }
+
+    report.check(
+        new_searches.len() == expected_new_searches,
+        &format!(
+            "exactly {expected_new_searches} new BookSearch (saw {})",
+            new_searches.len()
+        ),
+    );
+    let search_targets: BTreeSet<i64> = new_searches
+        .iter()
+        .flat_map(|command| referenced_book_ids(command))
+        .collect();
+    report.check(
+        search_targets.len() == 1,
+        &format!("the new searches name exactly one row (saw {search_targets:?})"),
+    );
+    let Some(&book_id) = search_targets.iter().next() else {
         return Ok(());
     };
-    let book_id = field_id(target).context("target row has no id")?;
+    let target = rows.iter().find(|row| field_id(row) == Some(book_id));
+    report.check(
+        target.is_some(),
+        &format!("searched row {book_id} belongs to author {author_id}"),
+    );
+    let Some(target) = target else {
+        return Ok(());
+    };
     println!(
-        "  target row {book_id}: foreignBookId={:?} goodreadsWorkId={:?} asin={:?} audibleASIN={:?}",
+        "  target row {book_id}: title={:?} foreignBookId={:?} goodreadsWorkId={:?} asin={:?} audibleASIN={:?}",
+        field_str(target, "title"),
         field_str(target, "foreignBookId"),
         field_str(target, "goodreadsWorkId"),
         field_str(target, "asin"),
         field_str(target, "audibleASIN"),
     );
-
-    if expected_new_searches > 0 {
-        report.check(
-            field_bool(target, "monitored") && field_bool(target, format.monitored_flag()),
-            &format!(
-                "book {book_id} monitored with {} true",
-                format.monitored_flag()
-            ),
-        );
-
-        // Editions: exactly one monitored, right readingFormatId, never 1.
-        let editions = api.get(&format!("/edition?bookId={book_id}")).await?;
-        let monitored: Vec<&Value> = editions
-            .as_array()
-            .into_iter()
-            .flatten()
-            .filter(|edition| field_bool(edition, "monitored"))
-            .collect();
-        let ids: Vec<Option<i64>> = monitored
-            .iter()
-            .map(|edition| edition.get("readingFormatId").and_then(Value::as_i64))
-            .collect();
-        report.check(
-            monitored.len() == 1 && ids[0] == Some(format.reading_format_id()),
-            &format!(
-                "exactly one monitored edition with readingFormatId {} (saw {ids:?})",
-                format.reading_format_id()
-            ),
-        );
-        report.check(
-            !ids.contains(&Some(1)),
-            "no physical edition (readingFormatId 1) is monitored",
-        );
+    if normalize(&field_str(target, "title")) != normalize(&selection.title) {
+        report.note("target title differs from the lookup display (drift-normalized row)");
     }
+    report.check(
+        field_str(target, "mediaType").eq_ignore_ascii_case(format.media_type())
+            && field_bool(target, "monitored")
+            && field_bool(target, format.monitored_flag()),
+        &format!(
+            "book {book_id} is a {} row, monitored with {} true",
+            format.media_type(),
+            format.monitored_flag()
+        ),
+    );
+    let sibling_changes: Vec<i64> = changed.into_iter().filter(|id| *id != book_id).collect();
+    report.check(
+        sibling_changes.is_empty(),
+        &format!("no sibling work's monitoring changed {sibling_changes:?}"),
+    );
 
-    // Commands: new BookSearch acknowledgements for this row, and no
-    // client-queued RefreshAuthor anywhere.
-    let commands = api.get("/command").await?;
-    let new_commands: Vec<&Value> = commands
+    // Editions: exactly one monitored, right readingFormatId, never 1.
+    let editions = api.get(&format!("/edition?bookId={book_id}")).await?;
+    let monitored: Vec<&Value> = editions
         .as_array()
         .into_iter()
         .flatten()
-        .filter(|command| field_id(command).is_some_and(|id| !before.command_ids.contains(&id)))
+        .filter(|edition| field_bool(edition, "monitored"))
         .collect();
-    let new_names: Vec<String> = new_commands.iter().map(|c| command_name(c)).collect();
-    report.note(&format!("new commands since snapshot: {new_names:?}"));
-    let new_searches = new_commands
+    let ids: Vec<Option<i64>> = monitored
         .iter()
-        .filter(|command| {
-            command_name(command).eq_ignore_ascii_case("BookSearch")
-                && command_references_book(command, book_id)
-        })
-        .count();
+        .map(|edition| edition.get("readingFormatId").and_then(Value::as_i64))
+        .collect();
     report.check(
-        new_searches == expected_new_searches,
+        monitored.len() == 1 && ids[0] == Some(format.reading_format_id()),
         &format!(
-            "exactly {expected_new_searches} new BookSearch for book {book_id} (saw {new_searches})"
+            "exactly one monitored edition with readingFormatId {} (saw {ids:?})",
+            format.reading_format_id()
         ),
     );
-    let manual_refresh = new_commands.iter().any(|command| {
-        command_name(command).eq_ignore_ascii_case("RefreshAuthor")
-            && field_str(command, "trigger").eq_ignore_ascii_case("manual")
-    });
     report.check(
-        !manual_refresh,
-        "no manually-triggered RefreshAuthor was queued",
+        !ids.contains(&Some(1)),
+        "no physical edition (readingFormatId 1) is monitored",
     );
 
     Ok(())
