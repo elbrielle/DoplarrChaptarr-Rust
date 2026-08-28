@@ -26,7 +26,7 @@ mapping explicitly calls `.Ignore(x => x.Monitored)`. Real monitoring state live
 `AudiobookMonitored` / `EbookMonitored`, reached through `IsMonitored()` /
 `SetMonitored()` / `SetMonitoredForMediaType()`.
 
-Despite that, five production call sites assign `true` to it, some immediately after
+Despite that, six production assignments still write it, some immediately after
 calling `SetMonitored(true)` and one with a comment about "keeping the legacy Monitored
 field consistent". Those assignments are no-ops that never reach the database, and the
 in-memory value they leave behind can disagree with the per-format flags for the rest of
@@ -68,13 +68,13 @@ points at a database column that does not exist, so the reader has to go to the 
 and the table mapping to find out. `IsFallbackEdition` reads as a meaningful edition
 property and is always `false`.
 
-There is also a smaller correctness concern we cannot evaluate from outside: the five
-`book.Monitored = true` assignments sit next to real per-format writes, which suggests
+There is also a smaller correctness concern we cannot evaluate from outside: the six
+`book.Monitored` assignments sit next to real per-format writes, which suggests
 someone believed they were doing something.
 
 ## Suggested fix
 
-- Delete `Book.Monitored` along with the five assignments, or, if it is kept as a shim,
+- Delete `Book.Monitored` along with the six assignments, or, if it is kept as a shim,
   correct the comment to say there is no backing column and that the ORM ignores it.
 - For `IsFallbackEdition`, either wire up whatever was meant to set it, or drop the
   property and the match bench branch that keys on it. If the column has to stay for

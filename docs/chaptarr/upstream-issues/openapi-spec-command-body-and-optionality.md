@@ -15,8 +15,9 @@ so we wanted to write them up in case they are cheap to fix.
 
 **1. `POST /api/v1/command` request body does not describe what the endpoint accepts.**
 The spec types the request body as `CommandResource` with `additionalProperties: false`,
-and types `CommandResource.body` as the abstract `Command` base schema (whose properties
-are almost all `readOnly`). The controller binds `CommandResource` only to read `name`,
+and types `CommandResource.body` as the abstract `Command` base schema — 8 of whose 14
+properties are `readOnly`, including `name` itself, the one field every caller must
+send. The controller binds `CommandResource` only to read `name`,
 then rewinds and re-reads the raw request stream and deserializes it into the concrete
 command subtype that `name` resolves to. So the real payload is command-shaped JSON such
 as `{"name":"BookSearch","bookIds":[1]}`. Generated validators reject `bookIds` because
@@ -33,7 +34,9 @@ not mark it so.
   route template is `{id:int?}` and the action takes no `id` parameter at all — it reads
   the id from the body. An optional integer is published as a required string. (The
   sibling `GET`/`DELETE` on the same path correctly type `id` as `integer/int32`, so the
-  three operations disagree with each other.)
+  three operations disagree with each other.) `PUT /api/v1/bookfile/{id}` publishes the
+  same required-string `id` from the same `[RestPutById]` template, so this looks
+  generator-wide rather than one route.
 
 **3. Controller-produced 400s are absent from the spec.**
 `POST /api/v1/book` returns `400 "Cannot add book: missing upstream provider book/work
@@ -46,14 +49,16 @@ protocol error rather than the actionable client-side validation failure it is.
 
 - `src/Chaptarr.Api.V1/openapi.json:2752-2762` — `POST /api/v1/command` request body → `CommandResource`
 - `src/Chaptarr.Api.V1/openapi.json:14135` — `CommandResource.body` → `$ref: Command`
-- `src/Chaptarr.Api.V1/openapi.json:14044-14107` — `Command` base schema, mostly `readOnly`
-- `src/Chaptarr.Api.V1/openapi.json:14193` — `CommandResource` `additionalProperties: false`
+- `src/Chaptarr.Api.V1/openapi.json:14044-14106` — `Command` base schema; 8 of 14
+  properties `readOnly`, `name` among them
+- `src/Chaptarr.Api.V1/openapi.json:14194` — `CommandResource` `additionalProperties: false`
 - `src/Chaptarr.Api.V1/Commands/CommandController.cs:59-73` — `[FromBody] CommandResource`, then `Request.Body.Seek(0)` and `STJson.Deserialize(body, commandType)`
 - `src/Chaptarr.Api.V1/Commands/CommandController.cs:50` — `PostValidator.RuleFor(c => c.Name).NotBlank()`
 - `src/Chaptarr.Api.V1/Commands/CommandResource.cs:17` — `public Command Body { get; set; }`
 - `src/Chaptarr.Api.V1/openapi.json:2440-2445` — `term` declared with no `required`
 - `src/Chaptarr.Api.V1/Books/BookLookupController.cs:48-53` — `term` blank → `BadRequest`
 - `src/Chaptarr.Api.V1/openapi.json:1874-1881` — `PUT /api/v1/book/{id}` path `id`: required, string
+- `src/Chaptarr.Api.V1/openapi.json:2264-2348` — `/api/v1/bookfile/{id}`: PUT `id` required, string (`:2327`); `src/Chaptarr.Api.V1/BookFiles/BookFileController.cs:270` — same `[RestPutById]`
 - `src/Chaptarr.Http/REST/Attributes/RestPutByIdAttribute.cs:10` — route template `{id:int?}`
 - `src/Chaptarr.Api.V1/Books/BookController.cs:1797-1798` — `UpdateBook([FromBody] BookResource)`, no `id` parameter
 - `src/Chaptarr.Api.V1/Books/BookController.cs:1175-1178` — `ProducesResponseType` for 409 and 202 only

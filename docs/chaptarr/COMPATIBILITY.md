@@ -449,8 +449,16 @@ the entire new-author import ran **synchronously inside `POST /book`** —
 every imported row carried the same `added` second, no `RefreshAuthor` or
 `RescanFolders` ever appeared in `/command`, and the composite gate passed
 on its first look because the handler had already run by the time the add
-returned. The gate stays: it is what makes that first look safe, and the
-command-based import paths it guards still exist for refresh-driven flows.
+returned. The synchronicity is by construction, not luck:
+`AddBookService.cs:439` throws if the requested work is absent when the
+inline import returns. The inverse also holds and is why the gate's
+command-quiet leg is not vestigial: the **existing-book path does queue a
+`RefreshAuthorCommand`** (`AddBookService.cs:296` passes `doRefresh: true`
+through `BookService.cs:370`'s `BookAddedEvent` to
+`BookAddedHandler.cs:19-23`) — the concrete citation for Sprint 2's
+"theoretical race" observation, which the composite gate was already
+covering. The gate stays: it is what makes the first look safe, and the
+command-based import paths it guards are real.
 
 ## POST /book hard edges
 
