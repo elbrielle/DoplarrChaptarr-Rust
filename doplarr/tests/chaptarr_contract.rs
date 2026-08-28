@@ -13,7 +13,11 @@
 //!    numeric while quality `profileType` is a camelCase string).
 
 use serde_json::{Value, json};
-use std::{collections::BTreeSet, fs, path::Path};
+use std::{
+    collections::BTreeSet,
+    env, fs,
+    path::{Path, PathBuf},
+};
 
 const FIXTURES: &str = concat!(env!("CARGO_MANIFEST_DIR"), "/tests/fixtures/chaptarr");
 
@@ -133,22 +137,40 @@ fn fixture_json(name: &str) -> Value {
     serde_json::from_str(&raw).unwrap_or_else(|error| panic!("invalid JSON in {name}: {error}"))
 }
 
+/// The route extract to check: the vendored fixture, or whatever
+/// `CHAPTARR_OPENAPI_PATHS` points at. That override exists for the
+/// release-watch script (`scripts/check-chaptarr-release.sh`), which runs this
+/// one test against an extract taken fresh from a candidate Chaptarr tag. Only
+/// this test honors it.
+fn openapi_paths_extract() -> (String, Value) {
+    let path = match env::var("CHAPTARR_OPENAPI_PATHS") {
+        Ok(overridden) => PathBuf::from(overridden),
+        Err(_) => Path::new(FIXTURES).join("openapi_paths.json"),
+    };
+    let label = path.display().to_string();
+    let raw = fs::read_to_string(&path)
+        .unwrap_or_else(|error| panic!("could not read route extract {label}: {error}"));
+    let value = serde_json::from_str(&raw)
+        .unwrap_or_else(|error| panic!("invalid JSON in {label}: {error}"));
+    (label, value)
+}
+
 #[test]
 fn depended_on_routes_exist_in_the_vendored_openapi_extract() {
-    let paths: BTreeSet<String> =
-        serde_json::from_value::<Vec<String>>(fixture_json("openapi_paths.json"))
-            .expect("openapi_paths.json must be an array of route strings")
-            .into_iter()
-            .collect();
+    let (extract, value) = openapi_paths_extract();
+    let paths: BTreeSet<String> = serde_json::from_value::<Vec<String>>(value)
+        .unwrap_or_else(|error| panic!("{extract} must be an array of route strings: {error}"))
+        .into_iter()
+        .collect();
     assert!(
         paths.len() > 100,
-        "the vendored extract looks truncated ({} paths); refresh it with .github/ci/refresh-openapi-extract.sh",
+        "the route extract {extract} looks truncated ({} paths); refresh it with .github/ci/refresh-openapi-extract.sh",
         paths.len()
     );
     let missing = missing_routes(&paths);
     assert!(
         missing.is_empty(),
-        "depended-on routes missing from the vendored openapi extract: {missing:?}. If a Chaptarr release removed them, the client contract must be revisited - do not just refresh the extract."
+        "depended-on routes missing from the openapi extract {extract}: {missing:?}. If a Chaptarr release removed them, the client contract must be revisited - do not just refresh the extract."
     );
 }
 
