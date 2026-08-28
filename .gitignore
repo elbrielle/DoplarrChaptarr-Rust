@@ -7,3 +7,6 @@ config.toml
 result
 __pycache__/
 *.py[cod]
+
+# Disposable canary instance state (SPRINT-3 5.2b); never committed
+scratch/

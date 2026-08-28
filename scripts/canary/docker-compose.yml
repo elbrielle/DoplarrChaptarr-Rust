@@ -1,0 +1,35 @@
+# Disposable Chaptarr canary instance (SPRINT-3 §4 / RELEASE_CHECKLIST).
+#
+# Run it from an empty throwaway project directory (conventionally
+# scratch/canary/, which is gitignored) so every mount below is disposable:
+#
+#   export CHAPTARR_CANARY_API_KEY="$(openssl rand -hex 16)"
+#   mkdir -p scratch/canary/config scratch/canary/audiobooks scratch/canary/ebooks
+#   docker compose -f scripts/canary/docker-compose.yml \
+#       --project-directory scratch/canary up -d
+#
+# The API key is preseeded through Chaptarr__Auth__ApiKey (AuthOptions.cs:5,
+# bound by Bootstrap.cs:283's AddEnvironmentVariables) so the run is fully
+# headless. /ping answers 503 until startup completes, then 200 - but
+# first-boot profile seeding runs AFTER that flip (AppLifetime.cs:57-68), so
+# poll GET /api/v1/qualityprofile for 2 entries before provisioning roots.
+# Never point this at a real library: both media mounts must be empty
+# throwaway directories (adding a root queues RescanFolders on it,
+# RootFolderService.cs:159-161).
+services:
+  chaptarr:
+    # Exact version tags only - no rolling minor tags are published
+    # (.github/workflows/docker-publish.yml:81-94).
+    image: chaptarr/chaptarr:0.9.936
+    container_name: chaptarr-canary
+    environment:
+      - PUID=1000
+      - PGID=1000
+      - TZ=Etc/UTC
+      - Chaptarr__Auth__ApiKey=${CHAPTARR_CANARY_API_KEY:?set CHAPTARR_CANARY_API_KEY}
+    volumes:
+      - ./config:/config
+      - ./audiobooks:/audiobooks
+      - ./ebooks:/ebooks
+    ports:
+      - "8789:8789"
