@@ -679,11 +679,19 @@ impl Chaptarr {
         book_id: i64,
         item: &ChaptarrItem,
         chosen_edition: &Value,
+        server_resolved: bool,
     ) -> Result<()> {
         let verified = self.get_book(book_id).await?;
-        if !local_row_matches_item(&verified, self.format, &item.book)
-            || !format_is_monitored(&verified, self.format)
-        {
+        let identity_ok = local_row_matches_item(&verified, self.format, &item.book);
+        if !identity_ok && server_resolved {
+            // The add echo named this row; the identity fields can differ
+            // from the lookup when the server normalized the work id.
+            warn!(
+                book_id,
+                "Read-back identity differs from the lookup (server-normalized work id)"
+            );
+        }
+        if (!identity_ok && !server_resolved) || !format_is_monitored(&verified, self.format) {
             bail!(UserFacingError(
                 "Chaptarr did not keep the requested format monitored, so no search was queued."
                     .into()
@@ -886,7 +894,25 @@ impl Chaptarr {
         if book_ids.is_empty() {
             return Ok(FormatState::Missing);
         }
-        if self.recent_search_acknowledged(&book_ids).await {
+        self.search_evidence_state(&book_ids).await
+    }
+
+    /// State of one server-resolved row: the add echo already named it as
+    /// the target, so no identity matching is applied — identity fields can
+    /// legitimately differ from the lookup when the metadata service
+    /// normalized the work id at import.
+    async fn request_state_for_row(&self, row: &Value) -> Result<FormatState> {
+        if format_state(row, self.format) == FormatState::Available {
+            return Ok(FormatState::Available);
+        }
+        let Some(book_id) = positive_id(row.get("id")) else {
+            return Ok(FormatState::Missing);
+        };
+        self.search_evidence_state(&[book_id]).await
+    }
+
+    async fn search_evidence_state(&self, book_ids: &[i64]) -> Result<FormatState> {
+        if self.recent_search_acknowledged(book_ids).await {
             return Ok(FormatState::Processing);
         }
         let commands = match self.commands().await {
@@ -899,7 +925,7 @@ impl Chaptarr {
                 ));
             }
         };
-        if book_search_command_active(&commands, &book_ids) {
+        if book_search_command_active(&commands, book_ids) {
             Ok(FormatState::Processing)
         } else {
             // A monitored row with no file and no matching search is a
@@ -1205,10 +1231,18 @@ impl MediaBackend for Chaptarr {
         }
 
         let mut author_added = false;
+        // The `POST /book` 201 echo is the canonical row the server created
+        // or deduped to. It is the only reliable link to the local row when
+        // the hosted metadata service maps the lookup's work id to a
+        // different canonical id at import (observed live on 0.9.936: lookup
+        // gr:4836639 became local gr:100243626 with no shared sidecar), so
+        // the echoed id is captured on every add path.
+        let mut echoed_book_id = None;
         if author.is_none() {
             let response = self
                 .add_book(&item.book.title, &self.new_author_body(&item))
                 .await?;
+            echoed_book_id = positive_id(response.get("id"));
             if let Some(author_id) = positive_id(response.get("authorId"))
                 .or_else(|| positive_id(response.pointer("/author/id")))
             {
@@ -1259,11 +1293,59 @@ impl MediaBackend for Chaptarr {
                     .as_ref()
                     .context("Chaptarr could not resolve the requested author")?;
                 let body = self.existing_author_book_body(&item, local_author)?;
-                self.add_book(&item.book.title, &body).await?;
+                let response = self.add_book(&item.book.title, &body).await?;
+                echoed_book_id = positive_id(response.get("id"));
                 // Adding one work can queue metadata commands of its own;
                 // wait until they are quiet before monitoring anything.
                 self.wait_for_catalog_settle(author_id, &item.book.author.author_name)
                     .await?;
+            }
+        }
+        let mut server_resolved = false;
+        if book.is_none()
+            && let Some(echoed_id) = echoed_book_id
+        {
+            match self.get_book(echoed_id).await {
+                Ok(row) if local_row_matches_format(&row, self.format) => {
+                    if !local_row_matches_item(&row, self.format, &item.book) {
+                        // The identity-drift hazard, observed rather than
+                        // fatal here: the server resolved the work itself.
+                        warn!(
+                            echoed_id,
+                            lookup_id = %item.book.foreign_book_id,
+                            local_id = %string_at(&row, "foreignBookId"),
+                            "Chaptarr normalized the requested work to a different canonical identity"
+                        );
+                    }
+                    // `POST /book` dedupes repeat adds to the canonical row,
+                    // so an id-drifted re-request lands here with the
+                    // original row: apply the same already-requested gate as
+                    // the pre-add check.
+                    match self.request_state_for_row(&row).await? {
+                        FormatState::Available => bail!(UserFacingError(format!(
+                            "{} is already available as an {}.",
+                            item.book.title,
+                            format_name(self.format)
+                        ))),
+                        FormatState::Processing => bail!(UserFacingError(format!(
+                            "{} is already requested as an {}.",
+                            item.book.title,
+                            format_name(self.format)
+                        ))),
+                        FormatState::Missing => {}
+                    }
+                    book = Some(row);
+                    server_resolved = true;
+                }
+                Ok(_) => {
+                    warn!(
+                        echoed_id,
+                        "Chaptarr's add echo resolved to a different format; falling back to identity matching"
+                    );
+                }
+                Err(error) => {
+                    warn!(echoed_id, %error, "Could not re-read the added Chaptarr book row");
+                }
             }
         }
         if book.is_none() {
@@ -1275,7 +1357,7 @@ impl MediaBackend for Chaptarr {
                 format_name(self.format)
             ))
         })?;
-        if !local_row_matches_item(&book, self.format, &item.book) {
+        if !server_resolved && !local_row_matches_item(&book, self.format, &item.book) {
             bail!(UserFacingError(
                 "Chaptarr resolved a different work, so nothing was monitored or searched.".into()
             ));
@@ -1284,16 +1366,25 @@ impl MediaBackend for Chaptarr {
         // Re-resolve edition-aware: duplicate import pockets are deduped by
         // which row carries usable requested-format editions, and the edition
         // to monitor is chosen from `/edition` data (`/book` responses never
-        // carry an editions key and must never be trusted for this).
-        let (book, editions) = self
-            .resolve_pocket(author_id, &item.book)
-            .await?
-            .ok_or_else(|| {
-                UserFacingError(format!(
-                    "Chaptarr could not resolve this {} to a safe local book row. Try refreshing the author in Chaptarr.",
-                    format_name(self.format)
-                ))
-            })?;
+        // carry an editions key and must never be trusted for this). A
+        // server-resolved row skips pocket re-matching, which is identity
+        // based and would discard a canonical row whose id drifted from the
+        // lookup's.
+        let (book, editions) = if server_resolved {
+            let book_id =
+                positive_id(book.get("id")).context("Resolved Chaptarr book has no id")?;
+            let editions = self.editions_for_book(book_id).await?;
+            (book, editions)
+        } else {
+            self.resolve_pocket(author_id, &item.book)
+                .await?
+                .ok_or_else(|| {
+                    UserFacingError(format!(
+                        "Chaptarr could not resolve this {} to a safe local book row. Try refreshing the author in Chaptarr.",
+                        format_name(self.format)
+                    ))
+                })?
+        };
         let Some(chosen) = preferred_edition_index(&editions, self.format, &item.book) else {
             warn!(
                 book_id = ?positive_id(book.get("id")),
@@ -1318,7 +1409,7 @@ impl MediaBackend for Chaptarr {
             &json!({"bookIds": [book_id], "monitored": true}),
         )
         .await?;
-        self.verify_request_ready(book_id, &item, &editions[chosen])
+        self.verify_request_ready(book_id, &item, &editions[chosen], server_resolved)
             .await?;
         let acknowledgement = match self
             .send_json(
@@ -2708,7 +2799,13 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn existing_author_missing_work_posts_allowlisted_body_then_verifies() {
+    async fn existing_author_missing_work_posts_allowlisted_body_then_resolves_via_the_add_echo() {
+        // Live 0.9.936 finding (2026-08-28 canary): the hosted metadata
+        // service can normalize the requested work to a different canonical
+        // id at import (lookup gr:4836639 became local gr:100243626 with no
+        // shared sidecar), and `POST /book` dedupes to and echoes that
+        // canonical row. The echoed id is the only reliable link, so the
+        // pipeline must resolve through it instead of re-matching identity.
         let author_unmonitored = json!({
             "id": 7001,
             "authorName": "Mara Vale",
@@ -2725,11 +2822,14 @@ mod tests {
             "ebookMonitorFuture": true,
             "audiobookMonitorFuture": false
         });
-        let resolved_book = json!({
+        // The canonical row: every identity field differs from the lookup's
+        // gr:work-1001 - the drift is the point.
+        let echoed_book = json!({
             "id": 4101,
             "authorId": 7001,
             "title": "The Clockwork Orchard",
-            "foreignBookId": "gr:work-1001",
+            "foreignBookId": "gr:canonical-9001",
+            "goodreadsWorkId": "gr:canonical-9001",
             "mediaType": "ebook",
             "monitored": false,
             "ebookMonitored": false,
@@ -2742,7 +2842,8 @@ mod tests {
             "id": 4101,
             "authorId": 7001,
             "title": "The Clockwork Orchard",
-            "foreignBookId": "gr:work-1001",
+            "foreignBookId": "gr:canonical-9001",
+            "goodreadsWorkId": "gr:canonical-9001",
             "mediaType": "ebook",
             "monitored": true,
             "ebookMonitored": true,
@@ -2781,23 +2882,15 @@ mod tests {
             "[]".to_string(),
             json!([author_unmonitored.clone()]).to_string(),
             "[]".to_string(),
-            json!({
-                "id": 9999,
-                "authorId": 7001,
-                "title": "The Clockwork Orchard",
-                "foreignBookId": "gr:work-other",
-                "mediaType": "ebook",
-                "releaseDate": "2024-01-01",
-                "foreignEditionId": "hc:edition-other",
-                "images": [{"url": "https://covers.example.test/wrong.jpg"}]
-            })
-            .to_string(),
+            // The 201 echo: the canonical (id-drifted) row.
+            echoed_book.to_string(),
             // POST /book can queue metadata commands of its own; the gate
             // re-checks before anything is monitored.
             author_unmonitored.to_string(),
             "[]".to_string(),
-            json!([resolved_book.clone()]).to_string(),
-            json!([resolved_book]).to_string(),
+            // Echo re-read, then the already-requested evidence check.
+            echoed_book.to_string(),
+            "[]".to_string(),
             json!([ebook_edition]).to_string(),
             author_unmonitored.to_string(),
             "{}".to_string(),
@@ -2844,8 +2937,8 @@ mod tests {
                 "POST /api/v1/book HTTP/1.1",
                 "GET /api/v1/author/7001 HTTP/1.1",
                 "GET /api/v1/command HTTP/1.1",
-                "GET /api/v1/book?authorId=7001 HTTP/1.1",
-                "GET /api/v1/book?authorId=7001 HTTP/1.1",
+                "GET /api/v1/book/4101 HTTP/1.1",
+                "GET /api/v1/command HTTP/1.1",
                 "GET /api/v1/edition?bookId=4101 HTTP/1.1",
                 "GET /api/v1/author/7001 HTTP/1.1",
                 "PUT /api/v1/author/7001 HTTP/1.1",
@@ -2865,6 +2958,95 @@ mod tests {
         assert!(recorded[15].contains("\"anyEditionOk\":false"));
         assert!(recorded[15].contains("\"manualAdd\":true"));
         assert_eq!(recorded[15].matches("\"monitored\":true").count(), 1);
+    }
+
+    #[tokio::test]
+    async fn duplicate_add_dedupes_to_the_canonical_row_and_refuses_a_second_search() {
+        // `POST /book` for an id-drifted work always re-adds (the lookup ids
+        // never match local rows), and the server dedupes to the canonical
+        // row (verified live: a repeat add returned 201 with the original
+        // row, same `added` timestamp). With a BookSearch still active for
+        // that row, the request must stop as already requested - after the
+        // idempotent add, before any monitor or edition write.
+        let author = json!({
+            "id": 7001,
+            "authorName": "Mara Vale",
+            "foreignAuthorId": "hc:author-1001",
+            "monitored": true,
+            "ebookMonitorFuture": true,
+            "audiobookMonitorFuture": false
+        });
+        let canonical_monitored = json!({
+            "id": 4101,
+            "authorId": 7001,
+            "title": "The Clockwork Orchard",
+            "foreignBookId": "gr:canonical-9001",
+            "goodreadsWorkId": "gr:canonical-9001",
+            "mediaType": "ebook",
+            "monitored": true,
+            "ebookMonitored": true,
+            "hasFiles": false
+        });
+        let active_search = json!([{
+            "id": 91,
+            "name": "BookSearch",
+            "status": "started",
+            "body": {"bookIds": [4101]}
+        }]);
+        let responses = vec![
+            json!([author.clone()]).to_string(),
+            "[]".to_string(),
+            author.to_string(),
+            "[]".to_string(),
+            json!([author.clone()]).to_string(),
+            "[]".to_string(),
+            canonical_monitored.to_string(),
+            author.to_string(),
+            "[]".to_string(),
+            canonical_monitored.to_string(),
+            active_search.to_string(),
+        ];
+        let (base_url, requests, server) = mock_api(responses).await;
+        let mut chaptarr = backend(ChaptarrFormat::Ebook);
+        chaptarr.base_url = base_url;
+        chaptarr.client = reqwest::Client::builder()
+            .timeout(Duration::from_secs(2))
+            .build()
+            .unwrap();
+        let mut item = lookup_item();
+        item.existing_book_id = None;
+
+        let error = chaptarr
+            .request(Vec::new(), Box::new(item), 1234)
+            .await
+            .unwrap_err();
+        assert!(
+            error
+                .downcast_ref::<UserFacingError>()
+                .is_some_and(|user| user.0.contains("already requested")),
+            "expected an already-requested refusal, got: {error:#}"
+        );
+        timeout(Duration::from_secs(2), server)
+            .await
+            .expect("mock server should finish")
+            .unwrap();
+
+        let recorded = requests.lock().await;
+        let lines: Vec<_> = recorded
+            .iter()
+            .map(|request| request_line(request))
+            .collect();
+        // The idempotent re-add is the last write: nothing is monitored,
+        // pinned, or searched after the refusal.
+        assert_eq!(*lines.last().unwrap(), "GET /api/v1/command HTTP/1.1");
+        assert_eq!(
+            lines
+                .iter()
+                .copied()
+                .filter(|line| !line.starts_with("GET "))
+                .collect::<Vec<_>>(),
+            vec!["POST /api/v1/book HTTP/1.1"]
+        );
     }
 
     #[tokio::test]

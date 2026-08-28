@@ -292,7 +292,7 @@ fn parse_book(value: &Value) -> Option<BookShape> {
     serde_json::from_value(value.clone()).ok()
 }
 
-fn local_row_matches_format(value: &Value, format: ChaptarrFormat) -> bool {
+pub(super) fn local_row_matches_format(value: &Value, format: ChaptarrFormat) -> bool {
     parse_book(value).is_some_and(|book| {
         !book.media_type.is_empty() && book.media_type.eq_ignore_ascii_case(format_name(format))
     })
