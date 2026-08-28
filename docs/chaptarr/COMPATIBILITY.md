@@ -167,9 +167,31 @@ case-insensitive), then bare-ASIN equality across `asin`/`audibleASIN`
 skips its tier; a full miss fails closed, and the title-tier fallback applies
 only when the selection carries no identity at all. Author resolution stays
 exact-`foreignAuthorId` first with the single-match name fallback — with no
-sidecar fields there is nothing safer to chain on. The sprint-3 canary keeps
-its explicit drift probe: a `gr:` lookup must resolve a row whose primary id
-normalized to `hc:`.
+sidecar fields there is nothing safer to chain on.
+
+**The live canary (0.9.936, 2026-08-28) showed the drift is wider than a
+prefix flip.** The hosted metadata service can map a lookup's work id to a
+*different canonical id* at import: lookup `gr:4836639` became local row
+`gr:100243626` (and `gr:3234863` became `hc:69589`) with **no shared
+sidecar** — `goodreadsWorkId` carries the new id, `goodreadsBookId` is
+absent, `asin` is populated locally but empty on the lookup row. No identity
+tier can bridge that, and it must not try: sibling pockets carry equally
+plausible different ids. What does bridge it is the server's own assertions,
+which the pipeline now treats as authority beside the chain:
+
+- the `POST /book` 201 echo names the canonical row the add created or
+  deduped to (a repeat add returns the same row, same `added` timestamp);
+- a lookup row's local-book ids (`localEbookBooks`/`localAudiobookBooks`),
+  which the server populates once the work has local rows.
+
+A server-asserted row is still format-checked, gated by the per-row
+already-requested check, and read-back verified by id; only the identity
+equality demotes to a logged warning. The chain remains the sole authority
+for rows the server has not vouched for. Two same-work quirks to expect:
+pinning an edition rewrites the row's edition-derived fields (title and
+ASIN change to the chosen edition's), and lookup rows for one author can
+carry different author-name spellings that mint separate local authors
+(observed: "Mary Wollstonecraft Shelley" vs "Mary Shelley").
 
 ## Profiles
 
@@ -422,6 +444,14 @@ signals, for the record: `book.addOptions` is never null (constructor
 default, `Book.cs:30`) and `AuthorScanCompletedEvent` has zero consumers.
 (That a 400+ book author imports for minutes is an operational observation.)
 
+Live observation (0.9.936 canary, 2026-08-28): on the canary-sized authors
+the entire new-author import ran **synchronously inside `POST /book`** —
+every imported row carried the same `added` second, no `RefreshAuthor` or
+`RescanFolders` ever appeared in `/command`, and the composite gate passed
+on its first look because the handler had already run by the time the add
+returned. The gate stays: it is what makes that first look safe, and the
+command-based import paths it guards still exist for refresh-driven flows.
+
 ## POST /book hard edges
 
 `BookController.cs:1175-1384`:
@@ -446,15 +476,26 @@ default, `Book.cs:30`) and `AuthorScanCompletedEvent` has zero consumers.
   and a **409** with `ProviderAmbiguityResource`
   (`ProviderAmbiguityResource.cs:41` pins the status code; properties `error`,
   `message`, `entityType`, `field`, `providerId`, `mediaType`, `candidates`)
-  on ambiguous provider identity. The bot branches on all three: a 202 stops
-  with "Chaptarr queued this work upstream - try again in a few minutes", a
-  409 stops with a message naming the conflicting candidates, and a 201 is
-  still only an acknowledgement whose identity the bot re-resolves itself.
+  on ambiguous provider identity. A 202 stops the flow with "Chaptarr queued
+  this work upstream - try again in a few minutes" (observed live three
+  times; the pending add is server-saved and materializes later), and a 409
+  stops with a message naming the conflicting candidates.
   These meanings are specific to `POST /book` (`PUT /book/monitor` also
   answers 202, as ordinary success).
-
-A post response is only an acknowledgement and never implies that a usable or
-correctly identified row already exists.
+- **The 201 echo is the server's own resolution of the work** — the
+  canonical row it created or deduped to, id-drift included; a repeat add
+  returns the same row with the same `added` timestamp (verified live). The
+  bot resolves the added work through the echoed id (format-checked, state
+  gated, read-back verified by id) and falls back to identity polling only
+  when the echo carries no row id.
+- Two live failure shapes beyond the documented three (0.9.936 canary): a
+  **500** whose detail is "Requested work ... resolves to multiple local
+  ... books", raised *after* the add imported the catalog — recoverable, so
+  the bot continues and resolves the imported rows through the identity
+  chain; and a **409 whose body is a bare error resource** ("SQLite Error
+  19: NOT NULL constraint failed: Editions.Images") from a failed
+  cross-format sibling mint — terminal, surfaced with the body's message
+  since it carries no candidates.
 
 ## Search and selection invariants
 

@@ -119,6 +119,13 @@ write-path behaviors; the next canary must exercise each one explicitly:
 - `POST /book` `202` and `409` responses stop the flow with user-facing
   messages instead of continuing into settle/poll.
 
+**Proven live (2026-08-28, `docs/chaptarr/canary/2026-08-28-0.9.936.md`):**
+`readingFormatId` selection and read-back (every case; a physical-only row
+refused with zero mutations), sparse rows flowing through (case 10), no
+`RefreshAuthor` anywhere, file/command/ack-based dedup (cases 5, 7, 9), and
+202/409 stopping the flow (three live 202s; the live 409 was a bare-error
+variant, recorded as finding #5).
+
 ## Sprint 2 write-path changes to prove live
 
 The simplification-and-identity work (Sprint 2) changed these write-path
@@ -141,8 +148,20 @@ behaviors; the next canary must exercise each one explicitly:
   instance has no configured root for must fail closed at startup rather
   than guess a folder.
 
+**Proven live (2026-08-28, `docs/chaptarr/canary/2026-08-28-0.9.936.md`):**
+the identity chain matched an exact-id pocket among drifted siblings (case
+2) and the drift probe found the drift is id-space-wide — lookup ids can
+vanish entirely at import, which is why server-asserted links (the `POST
+/book` echo and the lookup's local-book association) now stand beside the
+chain as authority (findings #1–#4). The composite settle latch held on
+scan-path adds (passing on the first look because live imports run
+synchronously inside the add — finding #6) and the failure injection left
+no downstream write (case 8). Root resolution by `folderType` resolved both
+formats' roots in the live `--check`.
+
 Nothing in this sprint graduates the write path out of beta; that requires
-this checklist's mutation proof against a disposable 0.9.936 instance.
+this checklist's mutation proof against a disposable 0.9.936 instance —
+now recorded in `docs/chaptarr/canary/2026-08-28-0.9.936.md`.
 
 ## Promotion record
 
