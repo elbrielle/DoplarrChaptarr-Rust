@@ -60,6 +60,13 @@ impl Format {
         }
     }
 
+    fn other_format(self) -> Format {
+        match self {
+            Format::Ebook => Format::Audiobook,
+            Format::Audiobook => Format::Ebook,
+        }
+    }
+
     /// `readingFormatId` values per the compatibility contract: 2 = audio,
     /// 3 = ebook, 1 = physical (never selectable).
     fn reading_format_id(self) -> i64 {
@@ -310,6 +317,28 @@ fn field_id(value: &Value) -> Option<i64> {
     value.get("id").and_then(Value::as_i64).filter(|id| *id > 0)
 }
 
+fn field_profile(value: &Value, key: &str) -> Option<i64> {
+    value.get(key).and_then(Value::as_i64).filter(|id| *id > 0)
+}
+
+/// One format's author-level settings. Chaptarr configures these per format
+/// and omits them until that format's first add, and an unconfigured format
+/// is a disabled one: its searches are silently emptied server-side. A
+/// request that reports success while these are absent is a vacuous success,
+/// which no monitor or edition read-back can catch.
+#[derive(Debug, Clone, PartialEq)]
+struct FormatSettings {
+    quality: Option<i64>,
+    metadata: Option<i64>,
+    root: String,
+}
+
+impl FormatSettings {
+    fn configured(&self) -> bool {
+        self.quality.is_some() && self.metadata.is_some() && !self.root.trim().is_empty()
+    }
+}
+
 #[derive(Debug, Clone, PartialEq)]
 struct AuthorGates {
     name: String,
@@ -317,6 +346,24 @@ struct AuthorGates {
     ebook_future: bool,
     audiobook_future: bool,
     add_options_present: bool,
+    ebook: FormatSettings,
+    audiobook: FormatSettings,
+}
+
+impl AuthorGates {
+    fn settings(&self, format: Format) -> &FormatSettings {
+        match format {
+            Format::Ebook => &self.ebook,
+            Format::Audiobook => &self.audiobook,
+        }
+    }
+
+    fn other_settings(&self, format: Format) -> &FormatSettings {
+        match format {
+            Format::Ebook => &self.audiobook,
+            Format::Audiobook => &self.ebook,
+        }
+    }
 }
 
 struct Snapshot {
@@ -340,6 +387,16 @@ async fn take_snapshot(api: &RawApi) -> Result<Snapshot> {
                 ebook_future: field_bool(author, "ebookMonitorFuture"),
                 audiobook_future: field_bool(author, "audiobookMonitorFuture"),
                 add_options_present: author.get("addOptions").is_some(),
+                ebook: FormatSettings {
+                    quality: field_profile(author, "ebookQualityProfileId"),
+                    metadata: field_profile(author, "ebookMetadataProfileId"),
+                    root: field_str(author, "ebookRootFolderPath"),
+                },
+                audiobook: FormatSettings {
+                    quality: field_profile(author, "audiobookQualityProfileId"),
+                    metadata: field_profile(author, "audiobookMetadataProfileId"),
+                    root: field_str(author, "audiobookRootFolderPath"),
+                },
             },
         );
         let rows = api.get(&format!("/book?authorId={id}")).await?;
@@ -588,6 +645,38 @@ async fn verify_request(
         !gates.add_options_present,
         "author addOptions is spent (settle latch observed)",
     );
+
+    // Per-format settings: an acknowledged BookSearch proves nothing about
+    // them, because Chaptarr empties the search server-side when the
+    // author's requested-format quality profile is missing. On a
+    // zero-indexer instance that is indistinguishable from an ordinary
+    // no-op, so the author record is the only place this can be checked.
+    let requested_settings = gates.settings(format);
+    if expected_new_searches > 0 {
+        report.check(
+            requested_settings.configured(),
+            &format!(
+                "author {author_id} is configured for {format:?}: quality={:?} metadata={:?} root={}",
+                requested_settings.quality,
+                requested_settings.metadata,
+                if requested_settings.root.trim().is_empty() {
+                    "MISSING"
+                } else {
+                    "set"
+                }
+            ),
+        );
+    }
+    // The other format's settings must survive untouched - including its
+    // root, which the server's progressive fill can overwrite with this
+    // format's path when an add body carries both roots.
+    if let Some(prior) = before.authors.get(&author_id) {
+        let other_now = gates.other_settings(format);
+        report.check(
+            other_now == prior.other_settings(format),
+            &format!("unrequested {:?} settings unchanged", format.other_format()),
+        );
+    }
 
     // Commands first: the new BookSearch names the target row. The
     // canonical row's title can legitimately differ from the lookup's

@@ -73,6 +73,15 @@ Run each case once and inspect Chaptarr after every step:
     confirm it rejects ebook rows, never changes the author's monitor gates,
     and that with the gate closed its `searchForNewBook` search is filtered
     out while an explicit `POST /command BookSearch` is not.
+13. Sequential cross-format on one author, both directions: create a new
+    author via `/request book` and later request an audiobook under it
+    (the same work and a different work), then mirror the direction with
+    another new author (`/request audiobook` first, `/request book`
+    second). Restart the bot between the first and second request at least
+    once. Chaptarr initializes author settings per format lazily
+    (`COMPATIBILITY.md`, "Author settings are per-format and lazily
+    initialized"), so the second request is what proves the
+    missing-format initialization path.
 
 For every case, verify:
 
@@ -98,7 +107,23 @@ For every case, verify:
   mutation;
 - no code path queued `RefreshAuthor` at any point;
 - a sparse-metadata row was treated as ordinary requestable data, never as an
-  "unresolved placeholder".
+  "unresolved placeholder";
+- (case 13) after the first request the author record carries only that
+  format's settings — the sibling's profile ids and root keys are absent,
+  per the lazy-initialization contract;
+- (case 13) after the second request the author's requested-format quality
+  profile id, metadata profile id, and root folder path read back equal to
+  the resolved configuration — in particular the ebook root equals the
+  configured **ebook** root, never the audiobook path (the
+  progressive-fill root collapse);
+- (case 13) the first format's settings, monitored edition, and files are
+  unchanged, no duplicate author exists, and each request queued exactly
+  one acknowledged search.
+
+Assert case 13 against the author record (`GET /author/{id}`), not the
+search outcome: on a zero-indexer instance an acknowledged `BookSearch` is
+indistinguishable from one `ReleaseSearchService` silently empties for a
+missing author quality profile.
 
 ## Sprint 1 write-path changes to prove live
 
@@ -162,6 +187,27 @@ formats' roots in the live `--check`.
 Nothing in this sprint graduates the write path out of beta; that requires
 this checklist's mutation proof against a disposable 0.9.936 instance —
 now recorded in `docs/chaptarr/canary/2026-08-28-0.9.936.md`.
+
+## Cross-format sequential settings to prove live
+
+Open as of 2026-08-29. The 2026-08-28 canary's case 4 verified monitoring,
+edition selection, and search acknowledgement on a cross-format second
+request, but never read the author's per-format settings — and its
+zero-indexer instance could not have surfaced the silent search-emptying
+that a missing author quality profile causes. Source analysis
+(`COMPATIBILITY.md`, "Author settings are per-format and lazily
+initialized") has since established that Chaptarr persists only the
+requested format's author settings per add, that a second-format request
+heals settings only when it triggers an actual `POST /book` (the
+progressive fill), and that the fill's single root parameter prefers the
+audiobook path. The bot side has since landed: the author gate write fills
+and read-back-verifies the requested format's quality profile, metadata
+profile, and root folder (fail-closed), add bodies carry only the requested
+format's root, and the canary driver now asserts both the requested
+format's configuration and the sibling's settings being unchanged. All of
+that is fixture-proven only. The next canary must run mutation case 13 in
+both directions before any release claims the sequential cross-format
+path.
 
 ## Promotion record
 

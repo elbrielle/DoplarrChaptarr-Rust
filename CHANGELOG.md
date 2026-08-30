@@ -2,6 +2,28 @@
 
 All notable changes to DoplarrChaptarr Rust are documented here.
 
+## Unreleased
+
+### Fixed
+
+- A request for an author's second format now configures that format before
+  searching. Chaptarr initializes author settings one format per add, so an
+  author created by `/request book` carries no audiobook quality profile,
+  metadata profile, or root folder — and an unconfigured format is a
+  disabled one, whose searches the server empties silently while every
+  monitor and edition read-back still passes. The author gate write now
+  fills any missing setting for the requested format and verifies all three
+  on the read-back, failing closed rather than queueing a search that can
+  never return a release. Existing values are never overwritten.
+- Add bodies now carry only the requested format's root folder. Chaptarr's
+  existing-author progressive fill collapses both roots into one
+  audiobook-preferring parameter, so a body carrying both could write the
+  audiobook path into an unset ebook root.
+
+The write path stays beta: these are fixture-proven only and need the new
+mutation case 13 (sequential cross-format, both directions) against a
+disposable instance — see `docs/chaptarr/RELEASE_CHECKLIST.md`.
+
 ## 4.6.1-chaptarr.1 - 2026-08-28
 
 Fixes the new-author request failure observed live on 2026-07-15. The old bot

@@ -268,6 +268,90 @@ name/path substring inference are gone. A root with `accessible: false` is
 never selectable. Do not expose a local root path in a Discord message or
 public issue report.
 
+## Author settings are per-format and lazily initialized
+
+`POST /book` configures exactly one format per call, by design. The
+controller keeps both formats' fields from the nested `author`
+(`BookController.cs:1740-1779` nulls a side only when its quality profile id
+is absent), but the add path then collapses to the single requested
+`mediaType` — `CreateAudiobook = isAudiobook; CreateEbook = !isAudiobook`
+(`AddBookService.cs:492-501`) — and every per-format assignment on the
+persisted author is gated on those flags
+(`AuthorLibraryService.cs:1700-1780`). The sibling format's five fields
+(`{format}QualityProfileId`, `{format}MetadataProfileId`,
+`{format}RootFolderPath`, `{format}MonitorExisting`, `{format}MonitorFuture`)
+are accepted on the wire and silently discarded; they persist NULL, which
+the model documents as "not configured for this media type yet"
+(`Author.cs:42`). The intent is explicit repo-wide: the root-folder
+defaulter refuses to fill the sibling (`AuthorLibraryService.cs:1845-1847`),
+a fixture asserts the sibling stays null
+(`AuthorLibraryServiceRootFolderInheritanceFixture.cs:370-393`), and the
+first-party UI never sends sibling fields on an add — its "both formats"
+option issues two sequential `POST /book` calls
+(`frontend/src/Utilities/Author/getNewAuthor.js:66,90`,
+`frontend/src/Store/Actions/searchActions.js:929-931`). Confirmed live
+(production, 2026-08-29): a new author created by an ebook request persisted
+only the ebook settings although the add body carried both formats'.
+
+An unconfigured format is a **disabled** format, with three consequences:
+
+- A `BookSearch` for a row of that format returns zero decisions when the
+  author has no quality profile for it — Debug log only, the command still
+  completes as an ordinary no-op
+  (`ReleaseSearchService.cs:106-113,154-166`). An acknowledged search is
+  therefore not proof the format is searchable.
+- A missing metadata profile excludes that format's remote books at refresh
+  and **prunes unprotected local rows**, logged at Info:
+  `[METADATA-PROFILE] No {format} metadata profile configured for author
+  '…'. Treating {format}s as disabled …`
+  (`RefreshAuthorService.cs:697-704`). Edition-pinned books stay
+  un-prunable (`EditionPinPolicy.cs:20`).
+- When the server resolves an add of that format to an existing local row,
+  it rejects the add with a validation error naming the missing metadata
+  profile (`AddBookService.cs:226-241`).
+
+Three server paths do configure a missing format later:
+
+- **The existing-author catalog add** (`POST /book` when the server has no
+  local row for the work, `AddBookService.cs:126-129`) progressively fills
+  the requested format's profiles and monitor fields, fill-only, never
+  overwriting (`AuthorLibraryService.cs:1044,1126-1137` →
+  `AuthorService.cs:677-765`). **Root-path landmine:** the call collapses
+  both roots into one parameter preferring audiobook
+  (`AuthorLibraryService.cs:1136-1137`), and the fill writes that single
+  value into whichever format it is configuring
+  (`AuthorService.cs:714-719,751-757`) — an ebook add whose body carries
+  both roots therefore writes the **audiobook** root into an unset
+  `EbookRootFolderPath`. **Every** add body must carry only the requested
+  format's root, the new-author body included: an add for an author the
+  server already has routes here regardless of what the client believed
+  (`AddBookService.cs:126-129` → `AuthorLibraryService.cs:1044`), so a
+  new-author body carrying both roots reaches the same collapse.
+- **The local-row dedupe branch** fills both formats per-format-correctly,
+  each gated on that format's profile id and root both being present in
+  the body (`AddBookService.cs:186-224`), before the disabled-format
+  rejection above is evaluated.
+- **`PUT /author/{id}`** applies per-format profile ids only when present
+  and positive — they can never be cleared this way — but copies **both
+  root paths unconditionally** (`Author.cs:278-308,329-330`): a body
+  omitting a configured root silently wipes it, and validation does not
+  catch a blank path (`AuthorService.cs:890-893`). The author write must
+  stay a full GET → mutate → PUT round-trip. When a root path is set and
+  that format's profiles are missing, the update auto-fills them from the
+  root folder's defaults (`AuthorService.cs:642,909-954`).
+
+Contract consequences: no client may assume the new-author body's
+sibling-format settings persisted (they did not), and a sequential
+cross-format request against an author created by the other format is safe
+only through a path that actually configures the requested format. When the
+requested-format row already exists locally, the pipeline performs no add,
+so nothing on that path initializes the settings while every monitor and
+edition read-back still passes and the acknowledged `BookSearch` is
+silently empty. `GET /author/{id}` serializes the per-format profile ids
+(`AuthorResource.cs:134-138`), so the author gate write is where the
+requested format's settings are filled and verified (safe sequence step 9)
+— the only step that can catch that vacuous success.
+
 ## Book rows
 
 - `id` and `authorId` identify the local row and parent author; `mediaType` is
@@ -569,12 +653,18 @@ every silent-write-prone step is more important than minimizing GETs.
    Short-circuit an available work or a fully consistent active request. A
    bare monitor flag is not proof a search was queued; partial state is
    carried forward for repair.
-5. If the author is new, `POST /book` with both roots, all four per-format
-   profile ids, an explicit `mediaType`, every book-level monitor flag false,
-   only the requested format's `*MonitorFuture` gate true, and search-on-add
-   false. If the author exists but the work does not, post the selected work
-   with the local `authorId` and a neutral requested-format edition
-   placeholder (free-text lookup editions are never carried into writes).
+5. Add bodies carry **only the requested format's root** and all four
+   per-format profile ids. A body carrying both roots routes the audiobook
+   root into an unset ebook root through the server's progressive fill, and
+   an add for an author the server already has reaches that fill whether or
+   not the client thought the author was new (see "Author settings are
+   per-format and lazily initialized"). If the author is new, `POST /book`
+   with that root, an explicit `mediaType`, every book-level monitor flag
+   false, only the requested format's `*MonitorFuture` gate true, and
+   search-on-add false. If the author exists but the work does not, post the
+   selected work with the local `authorId` and a neutral requested-format
+   edition placeholder (free-text lookup editions are never carried into
+   writes).
 6. After any add, wait for the catalog to settle (see "Catalog settling").
 7. Resolve the target row: identity match (exact `foreignBookId`, title tier
    only when the selection has no work id), format-bound, multi-book titles
@@ -584,8 +674,14 @@ every silent-write-prone step is more important than minimizing GETs.
    edition via `readingFormatId` (English preferred, junk demoted, projected
    edition honored). No usable edition stops with an actionable error and a
    log of what the server offered.
-9. Read the author; enable and re-verify the requested format's
-   `*MonitorFuture` gate if needed.
+9. Read the author; verify the requested format's quality profile id,
+   metadata profile id, and root folder path are configured, filling any
+   that are missing through the same full-resource `PUT /author/{id}`
+   (never a partial body — root paths copy unconditionally) and re-reading
+   them; then enable and re-verify the requested format's `*MonitorFuture`
+   gate if needed. Fail closed if a filled setting does not persist: an
+   unconfigured format silently empties every search and prunes unpinned
+   local rows on refresh.
 10. Select the edition with `PUT /book/{id}` (complete body,
     `anyEditionOk: false`, exactly one `monitored: true, manualAdd: true`
     edition).
