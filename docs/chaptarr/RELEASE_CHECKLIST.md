@@ -200,10 +200,14 @@ initialized") has since established that Chaptarr persists only the
 requested format's author settings per add, that a second-format request
 heals settings only when it triggers an actual `POST /book` (the
 progressive fill), and that the fill's single root parameter prefers the
-audiobook path. The next canary must run mutation case 13 with its
-author-record assertions before any release claims the sequential
-cross-format path; the bot-side settings verification in safe-sequence
-step 9 is not yet implemented and must land first.
+audiobook path. The bot side has since landed: the author gate write fills
+and read-back-verifies the requested format's quality profile, metadata
+profile, and root folder (fail-closed), add bodies carry only the requested
+format's root, and the canary driver now asserts both the requested
+format's configuration and the sibling's settings being unchanged. All of
+that is fixture-proven only. The next canary must run mutation case 13 in
+both directions before any release claims the sequential cross-format
+path.
 
 ## Promotion record
 

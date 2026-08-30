@@ -342,11 +342,12 @@ sibling-format settings persisted (they did not), and a sequential
 cross-format request against an author created by the other format is safe
 only through a path that actually configures the requested format. When the
 requested-format row already exists locally, the pipeline performs no add,
-nothing initializes the settings, every monitor/edition read-back passes,
-and the acknowledged `BookSearch` is silently empty — a vacuous success no
-current read-back detects. `GET /author/{id}` serializes the per-format
-profile ids (`AuthorResource.cs:134-138`), so requested-format settings can
-and must be verified there before the gate write (safe sequence step 9).
+so nothing on that path initializes the settings while every monitor and
+edition read-back still passes and the acknowledged `BookSearch` is
+silently empty. `GET /author/{id}` serializes the per-format profile ids
+(`AuthorResource.cs:134-138`), so the author gate write is where the
+requested format's settings are filled and verified (safe sequence step 9)
+— the only step that can catch that vacuous success.
 
 ## Book rows
 

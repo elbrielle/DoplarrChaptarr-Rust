@@ -800,6 +800,22 @@ impl Chaptarr {
     /// This full-resource PUT cannot re-arm or disarm the settle latch:
     /// the update path unconditionally restores the stored `AddOptions`
     /// (`AuthorResource.cs:571-573`, `AuthorService.cs:634-636`).
+    /// Enable the requested format's author gate, configuring the format
+    /// first when the author has never carried its settings.
+    ///
+    /// Chaptarr initializes author settings one format per add
+    /// (`AddBookService.cs:492-501`, `AuthorLibraryService.cs:1700-1780`),
+    /// so an author created by the other format's request reaches here
+    /// unconfigured - and an unconfigured format is a *disabled* format:
+    /// its searches are silently emptied (`ReleaseSearchService.cs:106-113`)
+    /// and its unpinned rows are pruned on refresh
+    /// (`RefreshAuthorService.cs:697-704`). Every monitor and edition
+    /// read-back still passes in that state, so this is the only step that
+    /// can catch it.
+    ///
+    /// The write stays a full GET-mutate-PUT round-trip: `PUT /author/{id}`
+    /// copies both root paths unconditionally (`Author.cs:329-330`), so a
+    /// partial body would wipe the format the author already had.
     async fn enable_author_format(&self, author_id: i64) -> Result<()> {
         let endpoint = format!("/author/{author_id}");
         let mut author: Value = self.get(&endpoint, &[]).await?;
@@ -807,12 +823,36 @@ impl Chaptarr {
             ChaptarrFormat::Ebook => "ebookMonitorFuture",
             ChaptarrFormat::Audiobook => "audiobookMonitorFuture",
         };
-        if author.get(flag).and_then(Value::as_bool) == Some(true) {
+        let (quality_key, metadata_key, root_key) = format_setting_keys(self.format);
+        let s = &self.settings;
+        let (quality, metadata, root) = match self.format {
+            ChaptarrFormat::Ebook => (s.ebook_quality, s.ebook_metadata, &s.ebook_root),
+            ChaptarrFormat::Audiobook => {
+                (s.audiobook_quality, s.audiobook_metadata, &s.audiobook_root)
+            }
+        };
+        // Fill-only, mirroring the server's own progressive semantics
+        // (`AuthorService.cs:677-765`): a profile or root already on the
+        // author was chosen deliberately and outranks this bot's config.
+        let missing_quality = positive_id(author.get(quality_key)).is_none();
+        let missing_metadata = positive_id(author.get(metadata_key)).is_none();
+        let missing_root = string_at(&author, root_key).trim().is_empty();
+        let gate_open = author.get(flag).and_then(Value::as_bool) == Some(true);
+        if gate_open && !missing_quality && !missing_metadata && !missing_root {
             return Ok(());
         }
         let object = author
             .as_object_mut()
             .context("Chaptarr returned an invalid author")?;
+        if missing_quality {
+            object.insert(quality_key.into(), json!(quality));
+        }
+        if missing_metadata {
+            object.insert(metadata_key.into(), json!(metadata));
+        }
+        if missing_root {
+            object.insert(root_key.into(), json!(root));
+        }
         object.insert(flag.into(), Value::Bool(true));
         object.insert("monitored".into(), Value::Bool(true));
         self.send_json(Method::PUT, &endpoint, &author).await?;
@@ -820,6 +860,15 @@ impl Chaptarr {
         if verified.get(flag).and_then(Value::as_bool) != Some(true) {
             bail!(UserFacingError(format!(
                 "Chaptarr did not enable {} monitoring for this author, so no search was queued.",
+                format_name(self.format)
+            )));
+        }
+        if positive_id(verified.get(quality_key)).is_none()
+            || positive_id(verified.get(metadata_key)).is_none()
+            || string_at(&verified, root_key).trim().is_empty()
+        {
+            bail!(UserFacingError(format!(
+                "Chaptarr did not keep this author's {} settings, so no search was queued.",
                 format_name(self.format)
             )));
         }
@@ -832,7 +881,14 @@ impl Chaptarr {
             ChaptarrFormat::Ebook => &s.ebook_root,
             ChaptarrFormat::Audiobook => &s.audiobook_root,
         };
-        json!({
+        // Only the requested format's root is ever sent. A server-side add
+        // that lands on an existing author feeds both roots through one
+        // audiobook-preferring parameter
+        // (`AuthorLibraryService.cs:1136-1137` -> `AuthorService.cs:714,751`),
+        // so a body carrying both writes the audiobook path into an unset
+        // `EbookRootFolderPath`. The sibling format's settings are the
+        // server's to configure on that format's own first request.
+        let mut body = json!({
             "title": item.book.title,
             "foreignBookId": item.book.foreign_book_id,
             "mediaType": format_name(self.format),
@@ -852,8 +908,6 @@ impl Chaptarr {
                 "ebookMetadataProfileId": s.ebook_metadata,
                 "audiobookMetadataProfileId": s.audiobook_metadata,
                 "rootFolderPath": chosen_root,
-                "ebookRootFolderPath": s.ebook_root,
-                "audiobookRootFolderPath": s.audiobook_root,
                 "ebookMonitorFuture": self.format == ChaptarrFormat::Ebook,
                 "audiobookMonitorFuture": self.format == ChaptarrFormat::Audiobook,
                 "monitored": true,
@@ -861,7 +915,10 @@ impl Chaptarr {
                 "addOptions": {"monitor": "none", "searchForMissingBooks": false}
             },
             "addOptions": {"searchForNewBook": false}
-        })
+        });
+        let (_, _, root_key) = format_setting_keys(self.format);
+        body["author"][root_key] = json!(chosen_root);
+        body
     }
 
     fn existing_author_book_body(&self, item: &ChaptarrItem, author: &Value) -> Result<Value> {
@@ -925,7 +982,11 @@ impl Chaptarr {
             ChaptarrFormat::Ebook => &s.ebook_root,
             ChaptarrFormat::Audiobook => &s.audiobook_root,
         };
-        Ok(json!({
+        // Only the requested format's root is sent; see `new_author_body`.
+        // This is the body that actually reaches the server's progressive
+        // fill, so the sibling root's absence is what keeps an ebook request
+        // from writing the audiobook path into `EbookRootFolderPath`.
+        let mut body = json!({
             "id": 0,
             "localBookId": null,
             "authorId": author_id,
@@ -951,12 +1012,13 @@ impl Chaptarr {
                 "ebookQualityProfileId": s.ebook_quality,
                 "audiobookQualityProfileId": s.audiobook_quality,
                 "ebookMetadataProfileId": s.ebook_metadata,
-                "audiobookMetadataProfileId": s.audiobook_metadata,
-                "ebookRootFolderPath": s.ebook_root,
-                "audiobookRootFolderPath": s.audiobook_root
+                "audiobookMetadataProfileId": s.audiobook_metadata
             },
             "addOptions": {"searchForNewBook": false}
-        }))
+        });
+        let (_, _, root_key) = format_setting_keys(self.format);
+        body["author"][root_key] = json!(chosen_root);
+        Ok(body)
     }
 
     async fn already_requested(&self, item: &ChaptarrItem) -> Result<Option<FormatState>> {
@@ -1076,6 +1138,25 @@ impl Chaptarr {
         searches
             .retain(|_, acknowledged| now.duration_since(*acknowledged) < RECENT_SEARCH_ACK_TTL);
         searches.insert(self.recent_search_key(book_id), now);
+    }
+}
+
+/// The author-level quality profile, metadata profile, and root folder keys
+/// for one format. Chaptarr configures these per format and omits them until
+/// that format's first add (`AuthorResource.cs:43-66`, `Author.cs:42`), so an
+/// absent key means the format is unconfigured, not that the author is new.
+fn format_setting_keys(format: ChaptarrFormat) -> (&'static str, &'static str, &'static str) {
+    match format {
+        ChaptarrFormat::Ebook => (
+            "ebookQualityProfileId",
+            "ebookMetadataProfileId",
+            "ebookRootFolderPath",
+        ),
+        ChaptarrFormat::Audiobook => (
+            "audiobookQualityProfileId",
+            "audiobookMetadataProfileId",
+            "audiobookRootFolderPath",
+        ),
     }
 }
 
@@ -1918,6 +1999,343 @@ mod tests {
         assert!(!body.to_string().contains("booksToMonitor"));
     }
 
+    fn ebook_only_author() -> Value {
+        // The shape Chaptarr persists for an author created by an ebook
+        // request: the add's audiobook fields are accepted and discarded
+        // (AddBookService.cs:492-501, AuthorLibraryService.cs:1700-1780), so
+        // the audiobook keys are absent entirely (nulls are omitted).
+        json!({
+            "id": 7001,
+            "authorName": "Mara Vale",
+            "foreignAuthorId": "hc:author-1001",
+            "monitored": true,
+            "ebookMonitorFuture": true,
+            "ebookQualityProfileId": 11,
+            "ebookMetadataProfileId": 21,
+            "ebookRootFolderPath": "/library/ebooks"
+        })
+    }
+
+    fn author_with_both_formats() -> Value {
+        let mut author = ebook_only_author();
+        let object = author.as_object_mut().unwrap();
+        object.insert("audiobookMonitorFuture".into(), json!(true));
+        object.insert("audiobookQualityProfileId".into(), json!(12));
+        object.insert("audiobookMetadataProfileId".into(), json!(22));
+        object.insert(
+            "audiobookRootFolderPath".into(),
+            json!("/library/audiobooks"),
+        );
+        author
+    }
+
+    #[tokio::test]
+    async fn a_missing_requested_format_setting_is_filled_and_verified_on_the_author_gate() {
+        // The sequential cross-format case: an author created by /request
+        // book carries no audiobook settings, and an unconfigured format is
+        // a disabled format - ReleaseSearchService.cs:106-113 silently
+        // empties its searches, so the gate write must carry the settings.
+        let responses = vec![
+            ebook_only_author().to_string(),
+            "{}".to_string(),
+            author_with_both_formats().to_string(),
+        ];
+        let (base_url, requests, server) = mock_api(responses).await;
+        let mut chaptarr = backend(ChaptarrFormat::Audiobook);
+        chaptarr.base_url = base_url;
+
+        chaptarr.enable_author_format(7001).await.unwrap();
+        timeout(Duration::from_secs(2), server)
+            .await
+            .expect("mock server should finish")
+            .unwrap();
+
+        let recorded = requests.lock().await;
+        let lines: Vec<_> = recorded
+            .iter()
+            .map(|request| request_line(request))
+            .collect();
+        assert_eq!(
+            lines,
+            vec![
+                "GET /api/v1/author/7001 HTTP/1.1",
+                "PUT /api/v1/author/7001 HTTP/1.1",
+                "GET /api/v1/author/7001 HTTP/1.1",
+            ]
+        );
+        let put = &recorded[1];
+        assert!(put.contains("\"audiobookQualityProfileId\":12"), "{put}");
+        assert!(put.contains("\"audiobookMetadataProfileId\":22"), "{put}");
+        assert!(
+            put.contains("\"audiobookRootFolderPath\":\"/library/audiobooks\""),
+            "{put}"
+        );
+        assert!(put.contains("\"audiobookMonitorFuture\":true"), "{put}");
+        // PUT /author/{id} copies both root paths unconditionally
+        // (Author.cs:329-330), so the write stays a full round-trip: the
+        // ebook side the first request configured must survive intact.
+        assert!(
+            put.contains("\"ebookRootFolderPath\":\"/library/ebooks\""),
+            "{put}"
+        );
+        assert!(put.contains("\"ebookQualityProfileId\":11"), "{put}");
+        assert!(put.contains("\"ebookMetadataProfileId\":21"), "{put}");
+    }
+
+    #[tokio::test]
+    async fn requested_format_settings_that_do_not_persist_fail_closed() {
+        // The read-back is the only proof: an author gate can flip while the
+        // format stays unconfigured, and that combination reports success
+        // while every search it queues is silently empty.
+        let mut half_written = author_with_both_formats();
+        half_written
+            .as_object_mut()
+            .unwrap()
+            .remove("audiobookMetadataProfileId");
+        let responses = vec![
+            ebook_only_author().to_string(),
+            "{}".to_string(),
+            half_written.to_string(),
+        ];
+        let (base_url, _requests, server) = mock_api(responses).await;
+        let mut chaptarr = backend(ChaptarrFormat::Audiobook);
+        chaptarr.base_url = base_url;
+
+        let error = chaptarr.enable_author_format(7001).await.unwrap_err();
+        assert!(
+            error
+                .downcast_ref::<UserFacingError>()
+                .is_some_and(|user| user.0.contains("audiobook settings")),
+            "expected a settings failure, got: {error:#}"
+        );
+        timeout(Duration::from_secs(2), server)
+            .await
+            .expect("mock server should finish")
+            .unwrap();
+    }
+
+    #[tokio::test]
+    async fn a_fully_configured_author_needs_no_gate_write() {
+        let responses = vec![author_with_both_formats().to_string()];
+        let (base_url, requests, server) = mock_api(responses).await;
+        let mut chaptarr = backend(ChaptarrFormat::Audiobook);
+        chaptarr.base_url = base_url;
+
+        chaptarr.enable_author_format(7001).await.unwrap();
+        timeout(Duration::from_secs(2), server)
+            .await
+            .expect("mock server should finish")
+            .unwrap();
+
+        let recorded = requests.lock().await;
+        assert_eq!(recorded.len(), 1);
+    }
+
+    #[tokio::test]
+    async fn an_admin_chosen_profile_is_never_overwritten_by_the_gate_write() {
+        // Fill-only, mirroring the server's own progressive semantics: a
+        // profile someone set for this author deliberately outranks config.
+        let mut admin_chosen = ebook_only_author();
+        admin_chosen
+            .as_object_mut()
+            .unwrap()
+            .insert("audiobookQualityProfileId".into(), json!(99));
+        let mut verified = admin_chosen.clone();
+        let object = verified.as_object_mut().unwrap();
+        object.insert("audiobookMonitorFuture".into(), json!(true));
+        object.insert("audiobookMetadataProfileId".into(), json!(22));
+        object.insert(
+            "audiobookRootFolderPath".into(),
+            json!("/library/audiobooks"),
+        );
+        let responses = vec![
+            admin_chosen.to_string(),
+            "{}".to_string(),
+            verified.to_string(),
+        ];
+        let (base_url, requests, server) = mock_api(responses).await;
+        let mut chaptarr = backend(ChaptarrFormat::Audiobook);
+        chaptarr.base_url = base_url;
+
+        chaptarr.enable_author_format(7001).await.unwrap();
+        timeout(Duration::from_secs(2), server)
+            .await
+            .expect("mock server should finish")
+            .unwrap();
+
+        let recorded = requests.lock().await;
+        let put = &recorded[1];
+        assert!(put.contains("\"audiobookQualityProfileId\":99"), "{put}");
+        assert!(!put.contains("\"audiobookQualityProfileId\":12"), "{put}");
+    }
+
+    #[tokio::test]
+    async fn a_second_format_request_configures_the_format_before_searching() {
+        // The sequential cross-format case end to end: the author was
+        // created by /request book, the audiobook row already exists, and no
+        // add fires - so the author gate write is the only step that can
+        // configure audiobooks. Without it every read-back below still
+        // passes and the acknowledged BookSearch is silently empty.
+        let audiobook_row = json!({
+            "id": 4101,
+            "authorId": 7001,
+            "title": "The Clockwork Orchard",
+            "foreignBookId": "gr:work-1001",
+            "mediaType": "audiobook",
+            "monitored": false,
+            "audiobookMonitored": false,
+            "hasFiles": false,
+            "releaseDate": "2024-01-01",
+            "foreignEditionId": "hc:edition-2001"
+        });
+        let monitored_row = json!({
+            "id": 4101,
+            "authorId": 7001,
+            "title": "The Clockwork Orchard",
+            "foreignBookId": "gr:work-1001",
+            "mediaType": "audiobook",
+            "monitored": true,
+            "audiobookMonitored": true,
+            "hasFiles": false,
+            "releaseDate": "2024-01-01",
+            "foreignEditionId": "hc:edition-2001"
+        });
+        let edition = json!({
+            "id": 8201,
+            "bookId": 4101,
+            "title": "The Clockwork Orchard",
+            "foreignEditionId": "hc:edition-2001",
+            "format": "Audible Audio", "readingFormatId": 2,
+            "isEbook": false,
+            "language": "eng",
+            "monitored": false,
+            "manualAdd": false
+        });
+        let monitored_edition = json!({
+            "id": 8201,
+            "bookId": 4101,
+            "title": "The Clockwork Orchard",
+            "foreignEditionId": "hc:edition-2001",
+            "format": "Audible Audio", "readingFormatId": 2,
+            "isEbook": false,
+            "language": "eng",
+            "monitored": true,
+            "manualAdd": true
+        });
+        let responses = vec![
+            // Resolve the server-associated row and its author.
+            audiobook_row.to_string(),
+            ebook_only_author().to_string(),
+            json!([audiobook_row.clone()]).to_string(),
+            "[]".to_string(),
+            // Settle: addOptions spent, commands quiet.
+            ebook_only_author().to_string(),
+            "[]".to_string(),
+            // Re-resolve under the lock; the row exists, so no add fires and
+            // nothing on this path configures audiobooks.
+            audiobook_row.to_string(),
+            ebook_only_author().to_string(),
+            json!([audiobook_row.clone()]).to_string(),
+            "[]".to_string(),
+            // Pocket resolution re-reads the author's rows and their editions.
+            json!([audiobook_row.clone()]).to_string(),
+            json!([edition]).to_string(),
+            // The author gate write is the only chance to configure the
+            // format before the search.
+            ebook_only_author().to_string(),
+            "{}".to_string(),
+            author_with_both_formats().to_string(),
+            "{}".to_string(),
+            "{}".to_string(),
+            monitored_row.to_string(),
+            json!([monitored_edition]).to_string(),
+            COMMAND_RESPONSE.to_string(),
+        ];
+        let (base_url, requests, server) = mock_api(responses).await;
+        let mut chaptarr = backend(ChaptarrFormat::Audiobook);
+        chaptarr.base_url = base_url;
+        chaptarr.client = reqwest::Client::builder()
+            .timeout(Duration::from_secs(2))
+            .build()
+            .unwrap();
+        let mut item = lookup_item();
+        item.existing_book_id = Some(4101);
+
+        chaptarr
+            .request(Vec::new(), Box::new(item), 1234)
+            .await
+            .unwrap();
+        timeout(Duration::from_secs(2), server)
+            .await
+            .expect("mock server should finish")
+            .unwrap();
+
+        let recorded = requests.lock().await;
+        let put = recorded
+            .iter()
+            .find(|request| request_line(request).starts_with("PUT /api/v1/author/7001"))
+            .expect("the second format must be configured on the author");
+        assert!(put.contains("\"audiobookQualityProfileId\":12"), "{put}");
+        assert!(put.contains("\"audiobookMetadataProfileId\":22"), "{put}");
+        assert!(
+            put.contains("\"audiobookRootFolderPath\":\"/library/audiobooks\""),
+            "{put}"
+        );
+        // The format the first request configured is carried through intact.
+        assert!(
+            put.contains("\"ebookRootFolderPath\":\"/library/ebooks\""),
+            "{put}"
+        );
+        assert_eq!(
+            recorded
+                .iter()
+                .filter(|request| request_line(request).starts_with("POST /api/v1/command"))
+                .count(),
+            1
+        );
+    }
+
+    #[test]
+    fn add_bodies_send_only_the_requested_format_root_folder() {
+        // The server's existing-author progressive fill collapses both roots
+        // into one audiobook-preferring parameter
+        // (AuthorLibraryService.cs:1136-1137 -> AuthorService.cs:714,751),
+        // so a body carrying both roots writes the audiobook path into an
+        // unset EbookRootFolderPath. Only the requested format's root is
+        // ever sent; the sibling is the server's to configure on its own
+        // first request.
+        let item = lookup_item();
+        let author: Value = serde_json::from_str(AUTHOR).unwrap();
+        for (format, own_key, sibling_key, own_root) in [
+            (
+                ChaptarrFormat::Ebook,
+                "ebookRootFolderPath",
+                "audiobookRootFolderPath",
+                "/library/ebooks",
+            ),
+            (
+                ChaptarrFormat::Audiobook,
+                "audiobookRootFolderPath",
+                "ebookRootFolderPath",
+                "/library/audiobooks",
+            ),
+        ] {
+            let chaptarr = backend(format);
+            for body in [
+                chaptarr.new_author_body(&item),
+                chaptarr.existing_author_book_body(&item, &author).unwrap(),
+            ] {
+                let nested = &body["author"];
+                assert_eq!(nested[own_key], own_root);
+                assert!(
+                    nested.get(sibling_key).is_none(),
+                    "sibling root leaked into the add body: {body}"
+                );
+                assert_eq!(body["rootFolderPath"], own_root);
+            }
+        }
+    }
+
     #[test]
     fn new_author_ebook_body_overrides_audiobook_lookup_projection() {
         let item = audiobook_projection_item();
@@ -2061,7 +2479,13 @@ mod tests {
             "foreignAuthorId": "hc:author-1001",
             "monitored": true,
             "ebookMonitorFuture": false,
-            "audiobookMonitorFuture": true
+            "audiobookMonitorFuture": true,
+            "ebookQualityProfileId": 11,
+            "ebookMetadataProfileId": 21,
+            "ebookRootFolderPath": "/library/ebooks",
+            "audiobookQualityProfileId": 12,
+            "audiobookMetadataProfileId": 22,
+            "audiobookRootFolderPath": "/library/audiobooks"
         });
         let audiobook = json!({
             "id": 5101,
@@ -2214,7 +2638,13 @@ mod tests {
             "foreignAuthorId": "gr:author-2001",
             "monitored": true,
             "ebookMonitorFuture": true,
-            "audiobookMonitorFuture": false
+            "audiobookMonitorFuture": false,
+            "ebookQualityProfileId": 11,
+            "ebookMetadataProfileId": 21,
+            "ebookRootFolderPath": "/library/ebooks",
+            "audiobookQualityProfileId": 12,
+            "audiobookMetadataProfileId": 22,
+            "audiobookRootFolderPath": "/library/audiobooks"
         });
         let sparse_book = json!({
             "id": 4199,
@@ -2349,7 +2779,13 @@ mod tests {
             "foreignAuthorId": "hc:author-9001",
             "monitored": true,
             "ebookMonitorFuture": true,
-            "audiobookMonitorFuture": false
+            "audiobookMonitorFuture": false,
+            "ebookQualityProfileId": 11,
+            "ebookMetadataProfileId": 21,
+            "ebookRootFolderPath": "/library/ebooks",
+            "audiobookQualityProfileId": 12,
+            "audiobookMetadataProfileId": 22,
+            "audiobookRootFolderPath": "/library/audiobooks"
         });
         let drifted_row = json!({
             "id": 4101,
@@ -2524,7 +2960,13 @@ mod tests {
             "foreignAuthorId": "hc:author-1001",
             "monitored": true,
             "ebookMonitorFuture": false,
-            "audiobookMonitorFuture": true
+            "audiobookMonitorFuture": true,
+            "ebookQualityProfileId": 11,
+            "ebookMetadataProfileId": 21,
+            "ebookRootFolderPath": "/library/ebooks",
+            "audiobookQualityProfileId": 12,
+            "audiobookMetadataProfileId": 22,
+            "audiobookRootFolderPath": "/library/audiobooks"
         });
         let mut author_settling = author.clone();
         author_settling.as_object_mut().unwrap().insert(
@@ -2588,7 +3030,13 @@ mod tests {
             "foreignAuthorId": "hc:author-1001",
             "monitored": true,
             "ebookMonitorFuture": false,
-            "audiobookMonitorFuture": true
+            "audiobookMonitorFuture": true,
+            "ebookQualityProfileId": 11,
+            "ebookMetadataProfileId": 21,
+            "ebookRootFolderPath": "/library/ebooks",
+            "audiobookQualityProfileId": 12,
+            "audiobookMetadataProfileId": 22,
+            "audiobookRootFolderPath": "/library/audiobooks"
         });
         let refresh_in_flight = json!([{
             "name": "RefreshAuthor",
@@ -2648,7 +3096,13 @@ mod tests {
             "foreignAuthorId": "hc:author-1001",
             "monitored": true,
             "ebookMonitorFuture": true,
-            "audiobookMonitorFuture": false
+            "audiobookMonitorFuture": false,
+            "ebookQualityProfileId": 11,
+            "ebookMetadataProfileId": 21,
+            "ebookRootFolderPath": "/library/ebooks",
+            "audiobookQualityProfileId": 12,
+            "audiobookMetadataProfileId": 22,
+            "audiobookRootFolderPath": "/library/audiobooks"
         });
         let book = json!({
             "id": 4101,
@@ -2922,7 +3376,13 @@ mod tests {
             "foreignAuthorId": "hc:author-1001",
             "monitored": true,
             "ebookMonitorFuture": false,
-            "audiobookMonitorFuture": false
+            "audiobookMonitorFuture": false,
+            "ebookQualityProfileId": 11,
+            "ebookMetadataProfileId": 21,
+            "ebookRootFolderPath": "/library/ebooks",
+            "audiobookQualityProfileId": 12,
+            "audiobookMetadataProfileId": 22,
+            "audiobookRootFolderPath": "/library/audiobooks"
         });
         let author_monitored = json!({
             "id": 7001,
@@ -2930,7 +3390,13 @@ mod tests {
             "foreignAuthorId": "hc:author-1001",
             "monitored": true,
             "ebookMonitorFuture": true,
-            "audiobookMonitorFuture": false
+            "audiobookMonitorFuture": false,
+            "ebookQualityProfileId": 11,
+            "ebookMetadataProfileId": 21,
+            "ebookRootFolderPath": "/library/ebooks",
+            "audiobookQualityProfileId": 12,
+            "audiobookMetadataProfileId": 22,
+            "audiobookRootFolderPath": "/library/audiobooks"
         });
         // The canonical row: every identity field differs from the lookup's
         // gr:work-1001 - the drift is the point.
@@ -3101,7 +3567,13 @@ mod tests {
             "foreignAuthorId": "hc:author-1001",
             "monitored": true,
             "ebookMonitorFuture": true,
-            "audiobookMonitorFuture": false
+            "audiobookMonitorFuture": false,
+            "ebookQualityProfileId": 11,
+            "ebookMetadataProfileId": 21,
+            "ebookRootFolderPath": "/library/ebooks",
+            "audiobookQualityProfileId": 12,
+            "audiobookMetadataProfileId": 22,
+            "audiobookRootFolderPath": "/library/audiobooks"
         });
         let responses = vec![
             drifted_row.to_string(),
@@ -3160,7 +3632,13 @@ mod tests {
             "foreignAuthorId": "hc:author-1001",
             "monitored": true,
             "ebookMonitorFuture": false,
-            "audiobookMonitorFuture": false
+            "audiobookMonitorFuture": false,
+            "ebookQualityProfileId": 11,
+            "ebookMetadataProfileId": 21,
+            "ebookRootFolderPath": "/library/ebooks",
+            "audiobookQualityProfileId": 12,
+            "audiobookMetadataProfileId": 22,
+            "audiobookRootFolderPath": "/library/audiobooks"
         });
         let author_monitored = json!({
             "id": 7001,
@@ -3168,7 +3646,13 @@ mod tests {
             "foreignAuthorId": "hc:author-1001",
             "monitored": true,
             "ebookMonitorFuture": true,
-            "audiobookMonitorFuture": false
+            "audiobookMonitorFuture": false,
+            "ebookQualityProfileId": 11,
+            "ebookMetadataProfileId": 21,
+            "ebookRootFolderPath": "/library/ebooks",
+            "audiobookQualityProfileId": 12,
+            "audiobookMetadataProfileId": 22,
+            "audiobookRootFolderPath": "/library/audiobooks"
         });
         let imported_book = json!({
             "id": 4101,
@@ -3301,7 +3785,13 @@ mod tests {
             "foreignAuthorId": "hc:author-1001",
             "monitored": true,
             "ebookMonitorFuture": true,
-            "audiobookMonitorFuture": false
+            "audiobookMonitorFuture": false,
+            "ebookQualityProfileId": 11,
+            "ebookMetadataProfileId": 21,
+            "ebookRootFolderPath": "/library/ebooks",
+            "audiobookQualityProfileId": 12,
+            "audiobookMetadataProfileId": 22,
+            "audiobookRootFolderPath": "/library/audiobooks"
         });
         let canonical_monitored = json!({
             "id": 4101,
@@ -3384,7 +3874,13 @@ mod tests {
             "foreignAuthorId": "hc:author-1001",
             "monitored": true,
             "ebookMonitorFuture": true,
-            "audiobookMonitorFuture": false
+            "audiobookMonitorFuture": false,
+            "ebookQualityProfileId": 11,
+            "ebookMetadataProfileId": 21,
+            "ebookRootFolderPath": "/library/ebooks",
+            "audiobookQualityProfileId": 12,
+            "audiobookMetadataProfileId": 22,
+            "audiobookRootFolderPath": "/library/audiobooks"
         });
         let unmonitored_book = json!({
             "id": 4101,
@@ -3556,7 +4052,13 @@ mod tests {
             "foreignAuthorId": "hc:author-1001",
             "monitored": true,
             "ebookMonitorFuture": false,
-            "audiobookMonitorFuture": false
+            "audiobookMonitorFuture": false,
+            "ebookQualityProfileId": 11,
+            "ebookMetadataProfileId": 21,
+            "ebookRootFolderPath": "/library/ebooks",
+            "audiobookQualityProfileId": 12,
+            "audiobookMetadataProfileId": 22,
+            "audiobookRootFolderPath": "/library/audiobooks"
         });
         let author_monitored = json!({
             "id": 7001,
@@ -3564,7 +4066,13 @@ mod tests {
             "foreignAuthorId": "hc:author-1001",
             "monitored": true,
             "ebookMonitorFuture": true,
-            "audiobookMonitorFuture": false
+            "audiobookMonitorFuture": false,
+            "ebookQualityProfileId": 11,
+            "ebookMetadataProfileId": 21,
+            "ebookRootFolderPath": "/library/ebooks",
+            "audiobookQualityProfileId": 12,
+            "audiobookMetadataProfileId": 22,
+            "audiobookRootFolderPath": "/library/audiobooks"
         });
         let book_unmonitored = json!({
             "id": 4101,
