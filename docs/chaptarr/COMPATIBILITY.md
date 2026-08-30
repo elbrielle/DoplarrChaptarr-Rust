@@ -322,8 +322,11 @@ Three server paths do configure a missing format later:
   value into whichever format it is configuring
   (`AuthorService.cs:714-719,751-757`) — an ebook add whose body carries
   both roots therefore writes the **audiobook** root into an unset
-  `EbookRootFolderPath`. Existing-author add bodies must carry only the
-  requested format's root.
+  `EbookRootFolderPath`. **Every** add body must carry only the requested
+  format's root, the new-author body included: an add for an author the
+  server already has routes here regardless of what the client believed
+  (`AddBookService.cs:126-129` → `AuthorLibraryService.cs:1044`), so a
+  new-author body carrying both roots reaches the same collapse.
 - **The local-row dedupe branch** fills both formats per-format-correctly,
   each gated on that format's profile id and root both being present in
   the body (`AddBookService.cs:186-224`), before the disabled-format
@@ -650,16 +653,18 @@ every silent-write-prone step is more important than minimizing GETs.
    Short-circuit an available work or a fully consistent active request. A
    bare monitor flag is not proof a search was queued; partial state is
    carried forward for repair.
-5. If the author is new, `POST /book` with both roots, all four per-format
-   profile ids, an explicit `mediaType`, every book-level monitor flag false,
-   only the requested format's `*MonitorFuture` gate true, and search-on-add
-   false. If the author exists but the work does not, post the selected work
-   with the local `authorId`, a neutral requested-format edition
-   placeholder (free-text lookup editions are never carried into writes),
-   and only the requested format's root — a body carrying both roots
-   routes the audiobook root into an unset ebook root through the
-   progressive fill (see "Author settings are per-format and lazily
-   initialized").
+5. Add bodies carry **only the requested format's root** and all four
+   per-format profile ids. A body carrying both roots routes the audiobook
+   root into an unset ebook root through the server's progressive fill, and
+   an add for an author the server already has reaches that fill whether or
+   not the client thought the author was new (see "Author settings are
+   per-format and lazily initialized"). If the author is new, `POST /book`
+   with that root, an explicit `mediaType`, every book-level monitor flag
+   false, only the requested format's `*MonitorFuture` gate true, and
+   search-on-add false. If the author exists but the work does not, post the
+   selected work with the local `authorId` and a neutral requested-format
+   edition placeholder (free-text lookup editions are never carried into
+   writes).
 6. After any add, wait for the catalog to settle (see "Catalog settling").
 7. Resolve the target row: identity match (exact `foreignBookId`, title tier
    only when the selection has no work id), format-bound, multi-book titles

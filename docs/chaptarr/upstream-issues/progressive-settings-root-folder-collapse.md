@@ -62,5 +62,8 @@ root.
 ## Workaround
 
 A client can avoid the wrong-root fill by sending only the requested
-format's root path in existing-author add bodies, so the `??` never has a
-sibling path to prefer.
+format's root path in every add body, so the `??` never has a sibling path
+to prefer. It has to be every body, not just the ones the client believes
+are for an existing author: an add for an author the server already has
+routes through this same path whatever the client assumed
+(`AddBookService.cs:126-129` → `AuthorLibraryService.cs:1044`).
